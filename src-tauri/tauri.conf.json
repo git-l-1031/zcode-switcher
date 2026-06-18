@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ZCode 账号切换器",
+  "version": "1.0.1",
+  "identifier": "com.zcode.switcher",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ZCode 账号切换器",
+        "width": 680,
+        "height": 720,
+        "minWidth": 560,
+        "minHeight": 560,
+        "resizable": true,
+        "backgroundColor": "#f6f7f9",
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDRDU0MzlEOUFBNEFEMgpSV1RTU3FyWk9WVE5BclBIM1VtM3RaZzcydElSR3U5UE42blZ2QlBlc1lRTy96Zk9qQUdhbU9sVgo=",
+      "endpoints": [
+        "https://github.com/git-1-1031/zcode-switcher/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
