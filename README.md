@@ -1,15 +1,16 @@
 # ZCode Switcher
 
-ZCode 账号管理与切换桌面工具，支持额度显示和无感切换。
+简体中文 | [English](README.en.md)
+
+ZCode 账号管理与切换桌面工具，支持额度显示、无感切换和应用内更新。
 
 ## 主要功能
 
 - 本地保存并管理多个 ZCode 账号。
-- 支持无感切换账号，减少切换后手动重启 ZCode 的频率。
-- 显示账号额度信息，并在关闭软件后保留最近一次额度数据。
-- 支持 GLM-5.2 低额度自动切换。
+- 支持无感切换账号，支持低额度自动切换。
+- 显示和刷新账号额度信息。
 - 支持中文、英文、俄文界面。
-- 支持在软件内检测更新、下载并安装 GitHub Releases 中的签名版本。
+- 支持在软件内检测更新、下载并安装。
 
 ## 下载
 
@@ -17,35 +18,10 @@ ZCode 账号管理与切换桌面工具，支持额度显示和无感切换。
 
 https://github.com/git-l-1031/zcode-switcher/releases
 
-## 开发
+## 文档
 
-安装依赖：
-
-```powershell
-npm install
-```
-
-启动开发模式：
-
-```powershell
-npm run tauri dev
-```
-
-构建前端：
-
-```powershell
-npm run build
-```
-
-构建 Windows 安装包：
-
-```powershell
-npm run tauri build
-```
-
-## 发布
-
-发布构建由 GitHub Actions 处理。推送 `v*` 版本标签后，会自动创建 Release 并上传安装包。应用内更新签名与发布说明见 `docs/release.md`。
+- [开发说明](docs/development.md)
+- [发布说明](docs/release.md)
 
 ## 免责声明
 
