@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "ZCode 账号切换器",
+  "productName": "ZCode Switcher",
   "version": "1.0.2",
   "identifier": "com.zcode.switcher",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "ZCode 账号切换器",
+        "title": "ZCode Switcher",
         "width": 680,
         "height": 720,
         "minWidth": 560,

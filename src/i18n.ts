@@ -31,7 +31,7 @@ const zh = {
   exportJson: "导出 JSON",
   switchAccount: "切换账号",
 
-  appTitle: "ZCode 账号切换器",
+  appTitle: "ZCode Switcher",
   appSubtitle: "一键管理并切换多个 ZCode 登录账号",
   languageSwitcher: "语言切换",
   networkUnavailable: "当前网络不可用，软件可继续打开；需要联网的额度查询可能失败。",
