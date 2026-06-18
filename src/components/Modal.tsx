@@ -465,6 +465,88 @@ export function BatchDeleteModal({
   );
 }
 
+/** 检测更新对话框：先展示更新说明 + 下载按钮，确认后切换为进度条，下载完成由父组件自行关闭。 */
+export function UpdateModal({
+  title,
+  message,
+  confirmText,
+  downloading,
+  progress,
+  onYes,
+  onClose,
+  language,
+}: {
+  title: string;
+  message: string;
+  confirmText: string;
+  /** 是否处于下载阶段（true 时隐藏按钮、显示进度条、屏蔽关闭） */
+  downloading: boolean;
+  /** 0-100；未知大小时传 null 显示无定值动画 */
+  progress: number | null;
+  onYes: () => void;
+  onClose: () => void;
+  language: Language;
+}) {
+  const t = getTexts(language);
+  useEffect(() => {
+    if (downloading) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose, downloading]);
+
+  return (
+    <Backdrop onClose={downloading ? () => {} : onClose}>
+      <div
+        className="modal-in w-[440px] rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold text-text-primary">{title}</h2>
+        <p className="mt-3 whitespace-pre-line text-sm leading-relaxed text-text-secondary">
+          {message}
+        </p>
+        {downloading ? (
+          <div className="mt-6">
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-text-secondary">{t.updateDownloadProgress}</span>
+              <span className="font-mono tabular-nums text-text-muted">
+                {progress !== null ? `${progress}%` : "…"}
+              </span>
+            </div>
+            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-base-cardhover">
+              {progress !== null ? (
+                <div
+                  className="h-full rounded-full bg-accent transition-all duration-150"
+                  style={{ width: `${progress}%` }}
+                />
+              ) : (
+                <div className="update-progress-indeterminate h-full w-1/3 rounded-full bg-accent" />
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-6 flex justify-end gap-2">
+            <button
+              onClick={onClose}
+              className="focus-ring rounded-lg border border-base-border bg-base-card px-4 py-2 text-sm text-text-secondary transition hover:bg-base-cardhover active:scale-[0.97]"
+            >
+              {t.cancel}
+            </button>
+            <button
+              onClick={onYes}
+              className="focus-ring rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white transition hover:bg-accent-hover active:scale-[0.97]"
+            >
+              {confirmText}
+            </button>
+          </div>
+        )}
+      </div>
+    </Backdrop>
+  );
+}
+
 function Backdrop({
   children,
   onClose,

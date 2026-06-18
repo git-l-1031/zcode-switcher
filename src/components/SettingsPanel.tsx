@@ -12,12 +12,12 @@ import {
   Check,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useStore, type Theme } from "../store";
 import { api } from "../lib/api";
 import { formatText, getTexts } from "../i18n";
+import { UpdateModal } from "./Modal";
 
 function Toggle({
   on,
@@ -211,8 +211,21 @@ export default function SettingsPanel() {
   } = useStore();
   const t = getTexts(language);
 
-  const [version, setVersion] = useState("v 1.1.0");
+  const setUpdateAvailable = useStore((s) => s.setUpdateAvailable);
+
+  const [version, setVersion] = useState("v 1.1.1");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateModal, setUpdateModal] = useState<
+    | {
+        title: string;
+        message: string;
+        confirmText: string;
+        downloading: boolean;
+        progress: number | null;
+        resolve: ((ok: boolean) => void) | null;
+      }
+    | null
+  >(null);
 
   useEffect(() => {
     getVersion()
@@ -226,48 +239,65 @@ export default function SettingsPanel() {
     try {
       const update = await check();
       if (!update) {
+        setUpdateAvailable(false);
         toast(t.updateNoUpdate, "success");
         return;
       }
+      setUpdateAvailable(true);
       const releaseNotes = (update.body || "").trim() || t.updateNoNotes;
-      const ok = await ask(
-        formatText(t.updateAvailableBody, {
-          version: update.version,
-          body: releaseNotes,
-        }),
-        {
+      const confirmed = await new Promise<boolean>((resolve) => {
+        setUpdateModal({
           title: t.updateAvailableTitle,
-          kind: "info",
-          okLabel: t.downloadInstall,
-          cancelLabel: t.cancel,
-        }
+          message: formatText(t.updateAvailableBody, {
+            version: update.version,
+            body: releaseNotes,
+          }),
+          confirmText: t.downloadInstall,
+          downloading: false,
+          progress: null,
+          resolve,
+        });
+      });
+      if (!confirmed) {
+        setUpdateModal(null);
+        return;
+      }
+
+      setUpdateModal((m) =>
+        m ? { ...m, downloading: true, progress: 0, resolve: null } : m
       );
-      if (!ok) return;
 
       let downloaded = 0;
       let total = 0;
-      let lastShownPercent = -10;
       await update.downloadAndInstall((event: DownloadEvent) => {
         if (event.event === "Started") {
           downloaded = 0;
           total = event.data.contentLength ?? 0;
-          lastShownPercent = 0;
-          toast(formatText(t.updateDownloading, { percent: 0 }), "info");
+          setUpdateModal((m) =>
+            m ? { ...m, downloading: true, progress: total > 0 ? 0 : null } : m
+          );
         } else if (event.event === "Progress") {
           downloaded += event.data.chunkLength;
           if (total > 0) {
-            const percent = Math.min(100, Math.round((downloaded / total) * 100));
-            if (percent >= lastShownPercent + 10 || percent === 100) {
-              lastShownPercent = percent;
-              toast(formatText(t.updateDownloading, { percent }), "info");
-            }
+            const percent = Math.min(
+              100,
+              Math.round((downloaded / total) * 100)
+            );
+            setUpdateModal((m) =>
+              m ? { ...m, downloading: true, progress: percent } : m
+            );
           }
         } else {
-          toast(t.updateInstalling, "info");
+          // Finished：进度填满后关闭弹窗，再触发重启安装
+          setUpdateModal((m) =>
+            m ? { ...m, downloading: true, progress: 100 } : m
+          );
         }
       });
+      setUpdateModal(null);
       await relaunch();
     } catch (e) {
+      setUpdateModal(null);
       toast(formatText(t.updateCheckFailed, { error: String(e) }), "error");
     } finally {
       setCheckingUpdate(false);
@@ -446,6 +476,19 @@ export default function SettingsPanel() {
         <Info size={11} className="mr-1 inline" />
         {t.disclaimer}
       </div>
+
+      {updateModal && (
+        <UpdateModal
+          title={updateModal.title}
+          message={updateModal.message}
+          confirmText={updateModal.confirmText}
+          downloading={updateModal.downloading}
+          progress={updateModal.progress}
+          language={language}
+          onYes={() => updateModal.resolve?.(true)}
+          onClose={() => updateModal.resolve?.(false)}
+        />
+      )}
     </div>
   );
 }

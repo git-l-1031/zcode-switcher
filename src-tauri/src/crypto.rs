@@ -27,6 +27,7 @@ const SECRET_ENV: &str = "ZCODE_CREDENTIAL_SECRET";
 /// 解出的 user_info（来自 oauth:zai:user_info）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserInfo {
+    #[allow(dead_code)]
     pub user_id: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,

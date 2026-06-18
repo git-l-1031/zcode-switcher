@@ -13,6 +13,7 @@ import {
   List,
 } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { check as checkUpdate } from "@tauri-apps/plugin-updater";
 import { useStore } from "./store";
 import { api, type CurrentStatus } from "./lib/api";
 import { LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
@@ -75,6 +76,8 @@ export default function App() {
     setLanguage,
     setFloatingWindowMode,
     setFloatingWindowScale,
+    updateAvailable,
+    setUpdateAvailable,
     toast,
   } = useStore();
   const t = getTexts(language);
@@ -161,6 +164,22 @@ export default function App() {
   useEffect(() => {
     if (!floatingWindowMode) setFloatingResizerOpen(false);
   }, [floatingWindowMode]);
+
+  // 启动时静默检测一次新版本：找到则在设置图标旁显示小字提示，已是最新则不打扰
+  useEffect(() => {
+    let cancelled = false;
+    checkUpdate()
+      .then((update) => {
+        if (cancelled) return;
+        setUpdateAvailable(!!update);
+      })
+      .catch(() => {
+        /* 离线或服务不可达时安静失败 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [setUpdateAvailable]);
 
   // 当 profiles 变化时刷新登录状态
   useEffect(() => {
@@ -489,13 +508,23 @@ export default function App() {
           >
             <RefreshCw size={16} className={loading ? "animate-spin" : ""} />
           </button>
-          <button
-            onClick={() => setShowSettings(true)}
-            title={t.settingsTitle}
-            className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg border border-base-border bg-base-card text-text-secondary transition hover:bg-base-cardhover hover:text-text-primary active:scale-[0.96]"
-          >
-            <SettingsIcon size={16} />
-          </button>
+          <div className="relative flex items-center gap-1.5">
+            {updateAvailable && (
+              <span className="select-none text-[10px] font-semibold text-accent">
+                {t.updateNewVersionBadge}
+              </span>
+            )}
+            <button
+              onClick={() => setShowSettings(true)}
+              title={t.settingsTitle}
+              className="focus-ring relative flex h-9 w-9 items-center justify-center rounded-lg border border-base-border bg-base-card text-text-secondary transition hover:bg-base-cardhover hover:text-text-primary active:scale-[0.96]"
+            >
+              <SettingsIcon size={16} />
+              {updateAvailable && (
+                <span className="pointer-events-none absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
 

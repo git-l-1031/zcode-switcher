@@ -44,6 +44,8 @@ interface AppState {
   floatingWindowMode: boolean;
   /** 悬浮窗缩放比例，1 为原始大小 */
   floatingWindowScale: number;
+  /** 启动自动检测发现的新版本 */
+  updateAvailable: boolean;
   /** 账号展示方式 */
   accountViewMode: AccountViewMode;
   /** 界面语言 */
@@ -71,6 +73,7 @@ interface AppState {
   setTheme: (v: Theme) => void;
   setFloatingWindowMode: (v: boolean) => void;
   setFloatingWindowScale: (v: number) => void;
+  setUpdateAvailable: (v: boolean) => void;
   setAccountViewMode: (v: AccountViewMode) => void;
   setLanguage: (v: Language) => void;
   restartZcode: () => Promise<boolean>;
@@ -316,6 +319,7 @@ export const useStore = create<AppState>((set, get) => {
     theme: initialTheme,
     floatingWindowMode: initialFloatingWindowMode,
     floatingWindowScale: loadFloatingWindowScale(),
+    updateAvailable: false,
     accountViewMode: loadAccountViewMode(),
     language: initialLanguage,
     loading: true,
@@ -536,8 +540,8 @@ export const useStore = create<AppState>((set, get) => {
 
   refreshAllQuota: async () => {
     const { profiles, refreshQuota } = get();
-    for (let i = 0; i < profiles.length; i += 3) {
-      const batch = profiles.slice(i, i + 3);
+    for (let i = 0; i < profiles.length; i += 2) {
+      const batch = profiles.slice(i, i + 2);
       await Promise.all(batch.map((p) => refreshQuota(p.id)));
     }
     await maybeSwitchGlm52Account(get());
@@ -662,6 +666,10 @@ export const useStore = create<AppState>((set, get) => {
       /* ignore */
     }
     set({ floatingWindowScale: scale });
+  },
+
+  setUpdateAvailable: (v) => {
+    set({ updateAvailable: v });
   },
 
   setAccountViewMode: (v) => {
