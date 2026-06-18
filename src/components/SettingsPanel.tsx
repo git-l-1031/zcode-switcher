@@ -209,7 +209,7 @@ export default function SettingsPanel() {
   } = useStore();
   const t = getTexts(language);
 
-  const [version, setVersion] = useState("v 1.0.1");
+  const [version, setVersion] = useState("v 1.0.2");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   useEffect(() => {

@@ -12,6 +12,9 @@ dist
 dist-ssr
 src-tauri/target
 src-tauri/gen
+progress.md
+docs/account-identity.md
+refresh-desktop-icon-cache.bat
 *.exe
 *.msi
 *.zip

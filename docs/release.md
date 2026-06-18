@@ -22,8 +22,8 @@
 创建并推送版本标签：
 
 ```powershell
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.0.2
+git push origin v1.0.2
 ```
 
 GitHub Actions 会自动创建 Release，并上传安装包和应用内更新所需的签名文件。
