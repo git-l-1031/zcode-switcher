@@ -1,28 +1,27 @@
-# Release
+# 发布说明
 
-## Updater
+## 应用内更新
 
-- The app checks updates from GitHub Releases:
-  `https://github.com/git-1-1031/zcode-switcher/releases/latest/download/latest.json`
-- The updater public key is stored in `src-tauri/tauri.conf.json`.
-- The updater private key must not be committed to the repository.
-- The local private key created for this project is:
-  `C:\Users\Sunset\Desktop\zcode-switcher-updater.key`
+- 软件会从 GitHub Releases 检查更新：
+  `https://github.com/git-l-1031/zcode-switcher/releases/latest/download/latest.json`
+- 更新验签公钥保存在 `src-tauri/tauri.conf.json`。
+- 更新签名私钥不能提交到仓库。
+- 请把更新签名私钥保存在本机安全位置，并把私钥全文写入 GitHub Actions Secrets。
 
 ## GitHub Secrets
 
-Before publishing releases from GitHub Actions, add these repository secrets:
+发布前需要在仓库的 Actions Secrets 中配置：
 
-- `TAURI_SIGNING_PRIVATE_KEY`: the full contents of `zcode-switcher-updater.key`
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: `zcode-switcher-updater`
+- `TAURI_SIGNING_PRIVATE_KEY`：更新签名私钥全文
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：生成更新签名密钥时使用的密码
 
-## Publish
+## 发布版本
 
-Create and push a version tag:
+创建并推送版本标签：
 
 ```powershell
 git tag v1.0.1
 git push origin v1.0.1
 ```
 
-GitHub Actions will create the release and upload the installer plus updater artifacts.
+GitHub Actions 会自动创建 Release，并上传安装包和应用内更新所需的签名文件。

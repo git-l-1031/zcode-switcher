@@ -42,7 +42,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDRDU0MzlEOUFBNEFEMgpSV1RTU3FyWk9WVE5BclBIM1VtM3RaZzcydElSR3U5UE42blZ2QlBlc1lRTy96Zk9qQUdhbU9sVgo=",
       "endpoints": [
-        "https://github.com/git-1-1031/zcode-switcher/releases/latest/download/latest.json"
+        "https://github.com/git-l-1031/zcode-switcher/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"
