@@ -6,6 +6,7 @@ import {
   FolderOpen,
   Download,
   Upload,
+  Trash2,
   Settings as SettingsIcon,
   X,
   LayoutGrid,
@@ -20,12 +21,23 @@ import zcodeLogo from "./assets/zcode-logo.png";
 import AccountCard from "./components/AccountCard";
 import EmptyState from "./components/EmptyState";
 import ToastStack from "./components/Toast";
-import { NameModal, ConfirmModal, BatchExportModal } from "./components/Modal";
+import { NameModal, ConfirmModal, BatchExportModal, BatchDeleteModal } from "./components/Modal";
 import SettingsPanel from "./components/SettingsPanel";
-import FloatingCapsule from "./components/FloatingCapsule";
+import FloatingCapsule, {
+  FLOATING_BASE_H,
+  FLOATING_BASE_W,
+  FLOATING_RESIZER_EXTRA_H,
+} from "./components/FloatingCapsule";
 
 interface DialogState {
-  kind: "none" | "capture" | "rename" | "switch" | "delete" | "batch-export";
+  kind:
+    | "none"
+    | "capture"
+    | "rename"
+    | "switch"
+    | "delete"
+    | "batch-export"
+    | "batch-delete";
   targetId?: string;
   targetName?: string;
 }
@@ -48,6 +60,7 @@ export default function App() {
     glm52AutoSwitchEnabled,
     glm52AutoSwitchThresholdWan,
     floatingWindowMode,
+    floatingWindowScale,
     theme,
     refresh,
     refreshAllQuota,
@@ -57,9 +70,11 @@ export default function App() {
     switchTo,
     renameProfile,
     deleteProfile,
+    deleteProfiles,
     setAccountViewMode,
     setLanguage,
     setFloatingWindowMode,
+    setFloatingWindowScale,
     toast,
   } = useStore();
   const t = getTexts(language);
@@ -70,6 +85,7 @@ export default function App() {
   const [startupIssue, setStartupIssue] = useState<StartupIssue>({ kind: "none" });
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
   const [showSettings, setShowSettings] = useState(false);
+  const [floatingResizerOpen, setFloatingResizerOpen] = useState(false);
   const activeProfile = profiles.find((p) => p.active);
 
   useEffect(() => {
@@ -116,21 +132,35 @@ export default function App() {
   useEffect(() => {
     const win = getCurrentWindow();
     const normalBg = theme === "dark" ? "#111317" : "#f6f7f9";
+    const domBg = floatingWindowMode ? "transparent" : normalBg;
+    document.documentElement.dataset.windowMode = floatingWindowMode ? "floating" : "normal";
+    document.documentElement.style.backgroundColor = domBg;
+    document.body.style.backgroundColor = domBg;
+    document.getElementById("root")?.style.setProperty("background-color", domBg);
     const apply = async () => {
       await win.setAlwaysOnTop(floatingWindowMode);
       await win.setResizable(!floatingWindowMode);
       await win.setDecorations(!floatingWindowMode);
       await win.setShadow(!floatingWindowMode);
       await win.setBackgroundColor(floatingWindowMode ? "#00000000" : normalBg);
+      const floatW = Math.round(FLOATING_BASE_W * floatingWindowScale);
+      const floatH = Math.round(
+        (FLOATING_BASE_H + (floatingResizerOpen ? FLOATING_RESIZER_EXTRA_H : 0)) *
+          floatingWindowScale
+      );
       await win.setSize(
-        floatingWindowMode ? new LogicalSize(350, 64) : new LogicalSize(680, 720)
+        floatingWindowMode ? new LogicalSize(floatW, floatH) : new LogicalSize(680, 720)
       );
       if (!floatingWindowMode) {
         await win.center();
       }
     };
     apply().catch(() => {});
-  }, [floatingWindowMode, theme]);
+  }, [floatingWindowMode, floatingWindowScale, floatingResizerOpen, theme]);
+
+  useEffect(() => {
+    if (!floatingWindowMode) setFloatingResizerOpen(false);
+  }, [floatingWindowMode]);
 
   // 当 profiles 变化时刷新登录状态
   useEffect(() => {
@@ -264,6 +294,14 @@ export default function App() {
     setDialog({ kind: "batch-export" });
   };
 
+  const handleBatchDelete = () => {
+    if (profiles.length === 0) {
+      toast(t.noProfilesToDelete, "warn");
+      return;
+    }
+    setDialog({ kind: "batch-delete" });
+  };
+
   const confirmBatchExport = async (ids: string[]) => {
     if (ids.length === 0) return;
     closeDialog();
@@ -291,6 +329,12 @@ export default function App() {
     }
   };
 
+  const confirmBatchDelete = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    closeDialog();
+    await deleteProfiles(ids);
+  };
+
   const closeDialog = () => setDialog({ kind: "none" });
 
   if (floatingWindowMode && tryNoRestartSwitch) {
@@ -300,6 +344,10 @@ export default function App() {
         quotas={quotas}
         thresholdWan={glm52AutoSwitchThresholdWan}
         language={language}
+        scale={floatingWindowScale}
+        resizerOpen={floatingResizerOpen}
+        onScaleChange={setFloatingWindowScale}
+        onToggleResizer={() => setFloatingResizerOpen((v) => !v)}
         onClose={() => setFloatingWindowMode(false)}
       />
     );
@@ -424,6 +472,14 @@ export default function App() {
             className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg border border-base-border bg-base-card text-text-secondary transition hover:bg-base-cardhover hover:text-text-primary active:scale-[0.96] disabled:opacity-50"
           >
             <Upload size={16} />
+          </button>
+          <button
+            onClick={handleBatchDelete}
+            disabled={busy || profiles.length === 0}
+            title={t.batchDeleteTitle}
+            className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg border border-base-border bg-base-card text-danger transition hover:bg-danger/10 active:scale-[0.96] disabled:opacity-50"
+          >
+            <Trash2 size={16} />
           </button>
           <button
             onClick={() => refresh()}
@@ -565,6 +621,16 @@ export default function App() {
           language={language}
           onClose={closeDialog}
           onConfirm={confirmBatchExport}
+        />
+      )}
+
+      {dialog.kind === "batch-delete" && (
+        <BatchDeleteModal
+          profiles={profiles}
+          quotas={quotas}
+          language={language}
+          onClose={closeDialog}
+          onConfirm={confirmBatchDelete}
         />
       )}
 

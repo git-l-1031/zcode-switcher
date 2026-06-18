@@ -34,6 +34,15 @@ jobs:
 
       - run: npm ci
 
+      - name: Read release notes
+        id: notes
+        shell: pwsh
+        run: |
+          $notes = node scripts/release-notes.mjs "${{ github.ref_name }}"
+          "body<<EOF" >> $env:GITHUB_OUTPUT
+          $notes >> $env:GITHUB_OUTPUT
+          "EOF" >> $env:GITHUB_OUTPUT
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -42,7 +51,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "ZCode Switcher ${{ github.ref_name }}"
-          releaseBody: "ZCode Switcher release ${{ github.ref_name }}"
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

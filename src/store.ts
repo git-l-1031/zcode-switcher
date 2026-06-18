@@ -42,6 +42,8 @@ interface AppState {
   theme: Theme;
   /** 悬浮窗模式：无感切换下的胶囊统计窗 */
   floatingWindowMode: boolean;
+  /** 悬浮窗缩放比例，1 为原始大小 */
+  floatingWindowScale: number;
   /** 账号展示方式 */
   accountViewMode: AccountViewMode;
   /** 界面语言 */
@@ -55,6 +57,7 @@ interface AppState {
   switchTo: (id: string) => Promise<boolean>;
   renameProfile: (id: string, name: string) => Promise<boolean>;
   deleteProfile: (id: string) => Promise<boolean>;
+  deleteProfiles: (ids: string[]) => Promise<{ deleted: number; failed: number }>;
 
   refreshQuota: (id: string) => Promise<void>;
   refreshAllQuota: () => Promise<void>;
@@ -67,6 +70,7 @@ interface AppState {
   setTryNoRestartSwitch: (v: boolean) => void;
   setTheme: (v: Theme) => void;
   setFloatingWindowMode: (v: boolean) => void;
+  setFloatingWindowScale: (v: number) => void;
   setAccountViewMode: (v: AccountViewMode) => void;
   setLanguage: (v: Language) => void;
   restartZcode: () => Promise<boolean>;
@@ -172,6 +176,22 @@ function loadFloatingWindowMode(): boolean {
     return false;
   }
 }
+const FLOATING_WINDOW_SCALE_KEY = "zcs:floatingWindowScale";
+const FLOATING_WINDOW_SCALE_MIN = 0.7;
+const FLOATING_WINDOW_SCALE_MAX = 1.6;
+function clampFloatingScale(v: number): number {
+  if (!Number.isFinite(v)) return 1;
+  return Math.min(FLOATING_WINDOW_SCALE_MAX, Math.max(FLOATING_WINDOW_SCALE_MIN, v));
+}
+function loadFloatingWindowScale(): number {
+  try {
+    const raw = localStorage.getItem(FLOATING_WINDOW_SCALE_KEY);
+    if (raw === null) return 1;
+    return clampFloatingScale(Number(raw));
+  } catch {
+    return 1;
+  }
+}
 function loadAccountViewMode(): AccountViewMode {
   try {
     const v = localStorage.getItem("zcs:accountViewMode");
@@ -192,11 +212,13 @@ function loadLanguage(): Language {
 /** 把主题应用到 <html data-theme> */
 function applyTheme(theme: Theme) {
   const bg = theme === "dark" ? "#111317" : "#f6f7f9";
+  const floating = document.documentElement.dataset.windowMode === "floating";
   try {
     document.documentElement.setAttribute("data-theme", theme);
-    document.documentElement.style.backgroundColor = bg;
-    document.body.style.backgroundColor = bg;
-    document.getElementById("root")?.style.setProperty("background-color", bg);
+    const domBg = floating ? "transparent" : bg;
+    document.documentElement.style.backgroundColor = domBg;
+    document.body.style.backgroundColor = domBg;
+    document.getElementById("root")?.style.setProperty("background-color", domBg);
   } catch {
     /* SSR / 非 DOM 环境 */
   }
@@ -293,6 +315,7 @@ export const useStore = create<AppState>((set, get) => {
     tryNoRestartSwitch: initialTryNoRestartSwitch,
     theme: initialTheme,
     floatingWindowMode: initialFloatingWindowMode,
+    floatingWindowScale: loadFloatingWindowScale(),
     accountViewMode: loadAccountViewMode(),
     language: initialLanguage,
     loading: true,
@@ -420,6 +443,56 @@ export const useStore = create<AppState>((set, get) => {
         "error"
       );
       return false;
+    }
+  },
+
+  deleteProfiles: async (ids) => {
+    const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+    if (uniqueIds.length === 0) return { deleted: 0, failed: 0 };
+    set({ busy: true });
+    const deletedIds: string[] = [];
+    const errors: string[] = [];
+    try {
+      for (const id of uniqueIds) {
+        try {
+          const ok = await api.deleteProfile(id);
+          if (ok) deletedIds.push(id);
+          else errors.push(id);
+        } catch (e) {
+          errors.push(String(e));
+        }
+      }
+      if (deletedIds.length > 0) {
+        set((s) => {
+          const quotas = { ...s.quotas };
+          for (const id of deletedIds) delete quotas[id];
+          saveCachedQuotas(quotas);
+          return { quotas };
+        });
+      }
+      await get().refresh(true);
+      const t = getTexts(get().language);
+      if (errors.length === 0) {
+        get().toast(
+          t.batchDeleteSuccess.replace("{count}", String(deletedIds.length)),
+          "success"
+        );
+      } else if (deletedIds.length > 0) {
+        get().toast(
+          t.batchDeletePartial
+            .replace("{deleted}", String(deletedIds.length))
+            .replace("{failed}", String(errors.length)),
+          "warn"
+        );
+      } else {
+        get().toast(
+          t.batchDeleteFailed.replace("{error}", errors.slice(0, 2).join("; ")),
+          "error"
+        );
+      }
+      return { deleted: deletedIds.length, failed: errors.length };
+    } finally {
+      set({ busy: false });
     }
   },
 
@@ -579,6 +652,16 @@ export const useStore = create<AppState>((set, get) => {
       /* ignore */
     }
     set({ floatingWindowMode: v });
+  },
+
+  setFloatingWindowScale: (v) => {
+    const scale = clampFloatingScale(v);
+    try {
+      localStorage.setItem(FLOATING_WINDOW_SCALE_KEY, String(scale));
+    } catch {
+      /* ignore */
+    }
+    set({ floatingWindowScale: scale });
   },
 
   setAccountViewMode: (v) => {

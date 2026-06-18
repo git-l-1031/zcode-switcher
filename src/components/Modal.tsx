@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { Check } from "lucide-react";
-import type { ProfileView } from "../lib/api";
+import { Check, Trash2 } from "lucide-react";
+import type { ProfileView, QuotaInfo } from "../lib/api";
 import { formatText, getTexts, type Language } from "../i18n";
 
 /** 文本输入对话框（用于保存账号 / 重命名）。 */
@@ -267,6 +267,196 @@ export function BatchExportModal({
               className="focus-ring rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white transition hover:bg-accent-hover active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100"
             >
               {t.exportZip}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Backdrop>
+  );
+}
+
+function identityLine(p: ProfileView, language: Language): string {
+  const t = getTexts(language);
+  if (p.email) return p.email;
+  if (p.phone) return formatText(t.phonePrefix, { phone: p.phone });
+  if (p.short_id) return formatText(t.idPrefix, { id: p.short_id });
+  return t.noIdentity;
+}
+
+function isExpiredOrError(quota?: QuotaInfo): boolean {
+  if (!quota) return false;
+  if (quota.error) return true;
+  const status = (quota.plan_status || "").toLowerCase();
+  if (status.includes("expire") || status.includes("expired") || status.includes("过期")) {
+    return true;
+  }
+  return !!quota.plan_ends_at && quota.plan_ends_at * 1000 < Date.now();
+}
+
+function profileStatusLabel(profile: ProfileView, quota: QuotaInfo | undefined, language: Language) {
+  const t = getTexts(language);
+  if (profile.active) return t.activeCannotDelete;
+  if (quota?.error) return t.errorAccountTag;
+  if (isExpiredOrError(quota)) return t.expiredAccountTag;
+  return t.normalAccountTag;
+}
+
+/** 批量删除选择对话框：可手动选择，也可直接清理过期或额度错误账号。 */
+export function BatchDeleteModal({
+  profiles,
+  quotas,
+  onClose,
+  onConfirm,
+  language,
+}: {
+  profiles: ProfileView[];
+  quotas: Record<string, QuotaInfo>;
+  onClose: () => void;
+  onConfirm: (ids: string[]) => void;
+  language: Language;
+}) {
+  const t = getTexts(language);
+  const selectableIds = profiles.filter((p) => !p.active).map((p) => p.id);
+  const cleanableIds = profiles
+    .filter((p) => !p.active && isExpiredOrError(quotas[p.id]))
+    .map((p) => p.id);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(cleanableIds));
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const toggle = (profile: ProfileView) => {
+    if (profile.active) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(profile.id)) next.delete(profile.id);
+      else next.add(profile.id);
+      return next;
+    });
+  };
+
+  const allSelected =
+    selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
+  const toggleAll = () => {
+    setSelected(allSelected ? new Set() : new Set(selectableIds));
+  };
+
+  return (
+    <Backdrop onClose={onClose}>
+      <div
+        className="modal-in flex max-h-[82vh] w-[460px] flex-col rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold text-text-primary">{t.batchDeleteTitle}</h2>
+        <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+          {t.batchDeleteDesc}
+        </p>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button
+            onClick={toggleAll}
+            disabled={selectableIds.length === 0}
+            className="focus-ring flex items-center gap-2 rounded-lg border border-base-border bg-base-card px-3 py-2 text-xs font-medium text-text-secondary transition hover:bg-base-cardhover disabled:opacity-40"
+          >
+            <span
+              className={`flex h-4 w-4 items-center justify-center rounded border transition ${
+                allSelected
+                  ? "border-accent bg-accent text-white"
+                  : "border-base-border bg-transparent"
+              }`}
+            >
+              {allSelected && <Check size={12} strokeWidth={3} />}
+            </span>
+            {allSelected ? t.clearAll : t.selectAll}
+          </button>
+          <button
+            onClick={() => onConfirm(cleanableIds)}
+            disabled={cleanableIds.length === 0}
+            className="focus-ring flex items-center justify-center gap-2 rounded-lg border border-danger/35 bg-danger/10 px-3 py-2 text-xs font-bold text-danger transition hover:bg-danger/15 disabled:opacity-40"
+          >
+            <Trash2 size={13} />
+            {t.cleanExpiredOrError}
+          </button>
+        </div>
+
+        <div className="mt-2 flex-1 overflow-y-auto pr-1">
+          <div className="flex flex-col gap-1">
+            {profiles.map((p) => {
+              const checked = selected.has(p.id);
+              const disabled = p.active;
+              const status = profileStatusLabel(p, quotas[p.id], language);
+              const dangerStatus = status === t.errorAccountTag || status === t.expiredAccountTag;
+              return (
+                <button
+                  key={p.id}
+                  disabled={disabled}
+                  onClick={() => toggle(p)}
+                  className={`focus-ring flex items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${
+                    checked
+                      ? "border-danger/50 bg-danger/5"
+                      : "border-base-border bg-base-card hover:bg-base-cardhover"
+                  }`}
+                >
+                  <span
+                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition ${
+                      checked
+                        ? "border-danger bg-danger text-white"
+                        : "border-base-border bg-transparent"
+                    }`}
+                  >
+                    {checked && <Check size={12} strokeWidth={3} />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-text-primary">
+                        {p.name}
+                      </span>
+                      <span
+                        className={`shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                          dangerStatus
+                            ? "bg-danger/15 text-danger"
+                            : disabled
+                            ? "bg-ok/15 text-ok"
+                            : "bg-base-cardhover text-text-muted"
+                        }`}
+                      >
+                        {status}
+                      </span>
+                    </span>
+                    <span className="block truncate text-[11px] text-text-muted">
+                      {identityLine(p, language)}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-5 flex items-center justify-between gap-2">
+          <span className="text-xs text-text-muted">
+            {selected.size > 0
+              ? formatText(t.willDelete, { count: selected.size })
+              : t.noSelection}
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={onClose}
+              className="focus-ring rounded-lg border border-base-border bg-base-card px-4 py-2 text-sm text-text-secondary transition hover:bg-base-cardhover active:scale-[0.97]"
+            >
+              {t.cancel}
+            </button>
+            <button
+              disabled={selected.size === 0}
+              onClick={() => onConfirm(Array.from(selected))}
+              className="focus-ring rounded-lg bg-danger px-4 py-2 text-sm font-bold text-white transition hover:brightness-110 active:scale-[0.97] disabled:opacity-40 disabled:active:scale-100"
+            >
+              {t.deleteSelected}
             </button>
           </div>
         </div>

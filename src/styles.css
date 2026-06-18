@@ -60,10 +60,27 @@ body,
   background-color: var(--bg);
 }
 
+html[data-window-mode="floating"],
+html[data-window-mode="floating"] body,
+html[data-window-mode="floating"] #root,
 html:has(.floating-window-root),
 html:has(.floating-window-root) body,
 html:has(.floating-window-root) #root {
   background-color: transparent !important;
+}
+
+html[data-window-mode="floating"],
+html[data-window-mode="floating"] body,
+html:has(.floating-window-root),
+html:has(.floating-window-root) body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.floating-window-root,
+.floating-window-root * {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 body {

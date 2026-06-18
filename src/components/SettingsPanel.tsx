@@ -211,7 +211,7 @@ export default function SettingsPanel() {
   } = useStore();
   const t = getTexts(language);
 
-  const [version, setVersion] = useState("v 1.0.3");
+  const [version, setVersion] = useState("v 1.1.0");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   useEffect(() => {
@@ -229,8 +229,12 @@ export default function SettingsPanel() {
         toast(t.updateNoUpdate, "success");
         return;
       }
+      const releaseNotes = (update.body || "").trim() || t.updateNoNotes;
       const ok = await ask(
-        formatText(t.updateAvailableBody, { version: update.version }),
+        formatText(t.updateAvailableBody, {
+          version: update.version,
+          body: releaseNotes,
+        }),
         {
           title: t.updateAvailableTitle,
           kind: "info",
