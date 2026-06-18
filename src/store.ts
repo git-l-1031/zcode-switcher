@@ -1,10 +1,14 @@
 import { create } from "zustand";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, type ProfileView, type QuotaInfo } from "./lib/api";
+import { glm52Remaining } from "./lib/glm52";
 import { getTexts, type Language } from "./i18n";
 
 export type ToastKind = "info" | "success" | "error" | "warn";
 export type Theme = "dark" | "light";
 export type AccountViewMode = "card" | "list";
+
+const FLOATING_WINDOW_STORAGE_KEY = "zcs:floatingWindowMode";
 
 const GLM52_CANDIDATE_MIN_UNITS = 1_500_000;
 const GLM52_DEFAULT_THRESHOLD_WAN = 35;
@@ -36,6 +40,8 @@ interface AppState {
   tryNoRestartSwitch: boolean;
   /** 当前主题 */
   theme: Theme;
+  /** 悬浮窗模式：无感切换下的胶囊统计窗 */
+  floatingWindowMode: boolean;
   /** 账号展示方式 */
   accountViewMode: AccountViewMode;
   /** 界面语言 */
@@ -60,6 +66,7 @@ interface AppState {
   setAutoRestart: (v: boolean) => void;
   setTryNoRestartSwitch: (v: boolean) => void;
   setTheme: (v: Theme) => void;
+  setFloatingWindowMode: (v: boolean) => void;
   setAccountViewMode: (v: AccountViewMode) => void;
   setLanguage: (v: Language) => void;
   restartZcode: () => Promise<boolean>;
@@ -71,18 +78,6 @@ interface AppState {
 let toastSeq = 1;
 let glm52AutoSwitching = false;
 let lastGlm52NoCandidateAt = 0;
-
-function glm52Remaining(quota?: QuotaInfo): number | null {
-  const item = quota?.balances?.find((b) =>
-    b.show_name.trim().toLowerCase().includes("glm-5.2")
-  );
-  if (!item) return null;
-  if (Number.isFinite(item.remaining_units)) return item.remaining_units;
-  if (Number.isFinite(item.total_units) && Number.isFinite(item.used_units)) {
-    return Math.max(0, item.total_units - item.used_units);
-  }
-  return null;
-}
 
 function isQuotaInfo(value: unknown): value is QuotaInfo {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -170,6 +165,13 @@ function loadTheme(): Theme {
     return "dark";
   }
 }
+function loadFloatingWindowMode(): boolean {
+  try {
+    return localStorage.getItem(FLOATING_WINDOW_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 function loadAccountViewMode(): AccountViewMode {
   try {
     const v = localStorage.getItem("zcs:accountViewMode");
@@ -198,8 +200,8 @@ function applyTheme(theme: Theme) {
   } catch {
     /* SSR / 非 DOM 环境 */
   }
-  import("@tauri-apps/api/window")
-    .then(({ getCurrentWindow }) => getCurrentWindow().setBackgroundColor(bg))
+  getCurrentWindow()
+    .setBackgroundColor(bg)
     .catch(() => {
       /* 浏览器预览或旧版运行时忽略 */
     });
@@ -260,9 +262,18 @@ export const useStore = create<AppState>((set, get) => {
   const initialTheme = loadTheme();
   const initialLanguage = loadLanguage();
   const initialTryNoRestartSwitch = loadTryNoRestartSwitch();
+  const initialFloatingWindowMode =
+    initialTryNoRestartSwitch && loadFloatingWindowMode();
   const storedAutoRestart = loadAutoRestart();
   const initialAutoRestart = initialTryNoRestartSwitch ? false : storedAutoRestart;
   applyTheme(initialTheme);
+  if (!initialFloatingWindowMode) {
+    try {
+      localStorage.setItem(FLOATING_WINDOW_STORAGE_KEY, "0");
+    } catch {
+      /* ignore */
+    }
+  }
   if (initialTryNoRestartSwitch && storedAutoRestart) {
     try {
       localStorage.setItem("zcs:autoRestart", "0");
@@ -281,6 +292,7 @@ export const useStore = create<AppState>((set, get) => {
     autoRestart: initialAutoRestart,
     tryNoRestartSwitch: initialTryNoRestartSwitch,
     theme: initialTheme,
+    floatingWindowMode: initialFloatingWindowMode,
     accountViewMode: loadAccountViewMode(),
     language: initialLanguage,
     loading: true,
@@ -529,10 +541,15 @@ export const useStore = create<AppState>((set, get) => {
     try {
       localStorage.setItem("zcs:tryNoRestartSwitch", v ? "1" : "0");
       if (v) localStorage.setItem("zcs:autoRestart", "0");
+      if (!v) localStorage.setItem(FLOATING_WINDOW_STORAGE_KEY, "0");
     } catch {
       /* ignore */
     }
-    set(v ? { tryNoRestartSwitch: true, autoRestart: false } : { tryNoRestartSwitch: false });
+    set(
+      v
+        ? { tryNoRestartSwitch: true, autoRestart: false }
+        : { tryNoRestartSwitch: false, floatingWindowMode: false }
+    );
   },
 
   setTheme: (v) => {
@@ -543,6 +560,25 @@ export const useStore = create<AppState>((set, get) => {
     }
     applyTheme(v);
     set({ theme: v });
+  },
+
+  setFloatingWindowMode: (v) => {
+    if (v && !get().tryNoRestartSwitch) {
+      try {
+        localStorage.setItem(FLOATING_WINDOW_STORAGE_KEY, "0");
+      } catch {
+        /* ignore */
+      }
+      set({ floatingWindowMode: false });
+      get().toast(getTexts(get().language).floatingWindowBlocked, "warn");
+      return;
+    }
+    try {
+      localStorage.setItem(FLOATING_WINDOW_STORAGE_KEY, v ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+    set({ floatingWindowMode: v });
   },
 
   setAccountViewMode: (v) => {

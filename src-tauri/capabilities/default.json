@@ -9,6 +9,14 @@
     "updater:default",
     "process:allow-restart",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "core:window:allow-center",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-background-color",
+    "core:window:allow-set-decorations",
+    "core:window:allow-set-resizable",
+    "core:window:allow-set-shadow",
+    "core:window:allow-set-size",
+    "core:window:allow-start-dragging"
   ]
 }

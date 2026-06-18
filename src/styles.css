@@ -60,6 +60,12 @@ body,
   background-color: var(--bg);
 }
 
+html:has(.floating-window-root),
+html:has(.floating-window-root) body,
+html:has(.floating-window-root) #root {
+  background-color: transparent !important;
+}
+
 body {
   background-color: var(--bg);
   color: var(--text-primary);

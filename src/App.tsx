@@ -14,6 +14,7 @@ import {
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useStore } from "./store";
 import { api, type CurrentStatus } from "./lib/api";
+import { LogicalSize, getCurrentWindow } from "@tauri-apps/api/window";
 import { LANGUAGES, formatText, getTexts } from "./i18n";
 import zcodeLogo from "./assets/zcode-logo.png";
 import AccountCard from "./components/AccountCard";
@@ -21,6 +22,7 @@ import EmptyState from "./components/EmptyState";
 import ToastStack from "./components/Toast";
 import { NameModal, ConfirmModal, BatchExportModal } from "./components/Modal";
 import SettingsPanel from "./components/SettingsPanel";
+import FloatingCapsule from "./components/FloatingCapsule";
 
 interface DialogState {
   kind: "none" | "capture" | "rename" | "switch" | "delete" | "batch-export";
@@ -44,6 +46,9 @@ export default function App() {
     language,
     quotaRefreshIntervalMinutes,
     glm52AutoSwitchEnabled,
+    glm52AutoSwitchThresholdWan,
+    floatingWindowMode,
+    theme,
     refresh,
     refreshAllQuota,
     refreshActiveQuotaForAutoSwitch,
@@ -54,6 +59,7 @@ export default function App() {
     deleteProfile,
     setAccountViewMode,
     setLanguage,
+    setFloatingWindowMode,
     toast,
   } = useStore();
   const t = getTexts(language);
@@ -106,6 +112,25 @@ export default function App() {
     }, 60 * 1000);
     return () => window.clearInterval(timer);
   }, [glm52AutoSwitchEnabled, activeProfile, refreshActiveQuotaForAutoSwitch]);
+
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const normalBg = theme === "dark" ? "#111317" : "#f6f7f9";
+    const apply = async () => {
+      await win.setAlwaysOnTop(floatingWindowMode);
+      await win.setResizable(!floatingWindowMode);
+      await win.setDecorations(!floatingWindowMode);
+      await win.setShadow(!floatingWindowMode);
+      await win.setBackgroundColor(floatingWindowMode ? "#00000000" : normalBg);
+      await win.setSize(
+        floatingWindowMode ? new LogicalSize(350, 64) : new LogicalSize(680, 720)
+      );
+      if (!floatingWindowMode) {
+        await win.center();
+      }
+    };
+    apply().catch(() => {});
+  }, [floatingWindowMode, theme]);
 
   // 当 profiles 变化时刷新登录状态
   useEffect(() => {
@@ -267,6 +292,18 @@ export default function App() {
   };
 
   const closeDialog = () => setDialog({ kind: "none" });
+
+  if (floatingWindowMode && tryNoRestartSwitch) {
+    return (
+      <FloatingCapsule
+        profiles={profiles}
+        quotas={quotas}
+        thresholdWan={glm52AutoSwitchThresholdWan}
+        language={language}
+        onClose={() => setFloatingWindowMode(false)}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full min-h-full flex-col bg-base-bg">

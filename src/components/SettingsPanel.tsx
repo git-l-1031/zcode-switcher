@@ -204,12 +204,14 @@ export default function SettingsPanel() {
     setTryNoRestartSwitch,
     theme,
     setTheme,
+    floatingWindowMode,
+    setFloatingWindowMode,
     language,
     toast,
   } = useStore();
   const t = getTexts(language);
 
-  const [version, setVersion] = useState("v 1.0.2");
+  const [version, setVersion] = useState("v 1.0.3");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   useEffect(() => {
@@ -299,6 +301,22 @@ export default function SettingsPanel() {
         <Toggle
           on={tryNoRestartSwitch}
           onClick={() => setTryNoRestartSwitch(!tryNoRestartSwitch)}
+        />
+      </Row>
+
+      <Row
+        icon={<Zap size={15} />}
+        title={t.floatingWindowTitle}
+        desc={
+          tryNoRestartSwitch
+            ? t.floatingWindowDesc
+            : t.floatingWindowDescDisabled
+        }
+      >
+        <Toggle
+          on={floatingWindowMode}
+          onClick={() => setFloatingWindowMode(!floatingWindowMode)}
+          disabled={!tryNoRestartSwitch}
         />
       </Row>
 
