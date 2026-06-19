@@ -11,6 +11,8 @@ import {
   X,
   LayoutGrid,
   List,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { check as checkUpdate } from "@tauri-apps/plugin-updater";
@@ -56,6 +58,7 @@ export default function App() {
     quotas,
     loadingQuota,
     accountViewMode,
+    hideAccountIdentity,
     language,
     quotaRefreshIntervalMinutes,
     glm52AutoSwitchEnabled,
@@ -73,6 +76,7 @@ export default function App() {
     deleteProfile,
     deleteProfiles,
     setAccountViewMode,
+    setHideAccountIdentity,
     setLanguage,
     setFloatingWindowMode,
     setFloatingWindowScale,
@@ -202,20 +206,6 @@ export default function App() {
       : startupIssue.kind === "local"
       ? formatText(t.localIssue, { error: startupIssue.error })
       : "";
-
-  // 顶部状态文字
-  let statusText = "";
-  let statusColor = "text-text-muted";
-  if (!status || !status.logged_in) {
-    statusText = `● ${t.statusNotSignedIn}`;
-    statusColor = "text-warn";
-  } else if (status.active_profile_name) {
-    statusText = `● ${formatText(t.statusCurrentLogin, { name: status.active_profile_name })}`;
-    statusColor = "text-ok";
-  } else {
-    statusText = `● ${t.statusUnsaved}`;
-    statusColor = "text-warn";
-  }
 
   // ---- 动作 ----
   const handleCapture = () => {
@@ -428,9 +418,6 @@ export default function App() {
         <span className="shrink-0 text-sm font-bold text-text-secondary">
           {formatText(t.myAccounts, { count: profiles.length })}
         </span>
-        <span className={`min-w-0 flex-1 truncate text-xs font-medium ${statusColor}`}>
-          {statusText}
-        </span>
         <div className="flex shrink-0 items-center gap-2">
           <div className="flex h-9 overflow-hidden rounded-lg border border-base-border bg-base-card p-0.5">
             <button
@@ -458,6 +445,22 @@ export default function App() {
               <List size={16} />
             </button>
           </div>
+          <button
+            onClick={() => setHideAccountIdentity(!hideAccountIdentity)}
+            title={
+              hideAccountIdentity
+                ? t.showAccountIdentity
+                : t.hideAccountIdentity
+            }
+            aria-pressed={hideAccountIdentity}
+            className={`focus-ring flex h-9 w-9 items-center justify-center rounded-lg border border-base-border transition active:scale-[0.96] ${
+              hideAccountIdentity
+                ? "bg-accent text-white shadow-sm"
+                : "bg-base-card text-text-secondary hover:bg-base-cardhover hover:text-text-primary"
+            }`}
+          >
+            {hideAccountIdentity ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
           <button
             onClick={handleCapture}
             disabled={busy}
@@ -539,7 +542,7 @@ export default function App() {
             className={
               accountViewMode === "list"
                 ? "flex flex-col gap-2 px-3"
-                : "grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] items-start gap-3 px-3"
+                : "grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] auto-rows-fr gap-3 px-3"
             }
           >
             {profiles.map((p, i) => (
@@ -551,6 +554,7 @@ export default function App() {
                 viewMode={accountViewMode}
                 quota={quotas[p.id]}
                 quotaLoading={!!loadingQuota[p.id]}
+                hideIdentity={hideAccountIdentity}
                 onSwitch={handleSwitch}
                 onRename={handleRename}
                 onDelete={handleDelete}
@@ -647,6 +651,7 @@ export default function App() {
       {dialog.kind === "batch-export" && (
         <BatchExportModal
           profiles={profiles}
+          hideIdentity={hideAccountIdentity}
           language={language}
           onClose={closeDialog}
           onConfirm={confirmBatchExport}
@@ -657,6 +662,7 @@ export default function App() {
         <BatchDeleteModal
           profiles={profiles}
           quotas={quotas}
+          hideIdentity={hideAccountIdentity}
           language={language}
           onClose={closeDialog}
           onConfirm={confirmBatchDelete}

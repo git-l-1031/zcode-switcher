@@ -48,6 +48,8 @@ interface AppState {
   updateAvailable: boolean;
   /** 账号展示方式 */
   accountViewMode: AccountViewMode;
+  /** 是否隐藏账号卡片里的邮箱和手机号 */
+  hideAccountIdentity: boolean;
   /** 界面语言 */
   language: Language;
   loading: boolean;
@@ -75,6 +77,7 @@ interface AppState {
   setFloatingWindowScale: (v: number) => void;
   setUpdateAvailable: (v: boolean) => void;
   setAccountViewMode: (v: AccountViewMode) => void;
+  setHideAccountIdentity: (v: boolean) => void;
   setLanguage: (v: Language) => void;
   restartZcode: () => Promise<boolean>;
 
@@ -203,6 +206,13 @@ function loadAccountViewMode(): AccountViewMode {
     return "card";
   }
 }
+function loadHideAccountIdentity(): boolean {
+  try {
+    return localStorage.getItem("zcs:hideAccountIdentity") === "1";
+  } catch {
+    return false;
+  }
+}
 function loadLanguage(): Language {
   try {
     const v = localStorage.getItem("zcs:language");
@@ -321,6 +331,7 @@ export const useStore = create<AppState>((set, get) => {
     floatingWindowScale: loadFloatingWindowScale(),
     updateAvailable: false,
     accountViewMode: loadAccountViewMode(),
+    hideAccountIdentity: loadHideAccountIdentity(),
     language: initialLanguage,
     loading: true,
     busy: false,
@@ -540,9 +551,8 @@ export const useStore = create<AppState>((set, get) => {
 
   refreshAllQuota: async () => {
     const { profiles, refreshQuota } = get();
-    for (let i = 0; i < profiles.length; i += 2) {
-      const batch = profiles.slice(i, i + 2);
-      await Promise.all(batch.map((p) => refreshQuota(p.id)));
+    for (const p of profiles) {
+      await refreshQuota(p.id);
     }
     await maybeSwitchGlm52Account(get());
   },
@@ -679,6 +689,15 @@ export const useStore = create<AppState>((set, get) => {
       /* ignore */
     }
     set({ accountViewMode: v });
+  },
+
+  setHideAccountIdentity: (v) => {
+    try {
+      localStorage.setItem("zcs:hideAccountIdentity", v ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+    set({ hideAccountIdentity: v });
   },
 
   setLanguage: (v) => {

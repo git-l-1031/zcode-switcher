@@ -21,20 +21,13 @@ interface Props {
   viewMode?: "card" | "list";
   quota?: QuotaInfo;
   quotaLoading?: boolean;
+  hideIdentity?: boolean;
   onSwitch: (id: string) => void;
   onRename: (id: string) => void;
   onDelete: (id: string) => void;
   onExport: (id: string) => void;
   onRefreshQuota: (id: string) => void;
   language: Language;
-}
-
-/** 格式化日期：YYYY-MM-DD HH:mm */
-function formatDateTime(ts: number): string {
-  if (!ts) return "";
-  const d = new Date(ts * 1000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 /** 格式化日期：YYYY-MM-DD */
@@ -69,6 +62,7 @@ export default function AccountCard({
   viewMode = "card",
   quota,
   quotaLoading,
+  hideIdentity = false,
   onSwitch,
   onRename,
   onDelete,
@@ -82,7 +76,9 @@ export default function AccountCard({
   const hasEmail = !!profile.email;
   const hasPhone = !!profile.phone;
   const identityText = hasEmail ? profile.email : hasPhone ? profile.phone : "";
-  const sub = hasEmail
+  const sub = hideIdentity
+    ? t.accountIdentityHidden
+    : hasEmail
     ? profile.email
     : hasPhone
     ? formatText(t.phonePrefix, { phone: profile.phone })
@@ -91,9 +87,9 @@ export default function AccountCard({
     : t.noIdentity;
   const initialSource = identityText || profile.name;
 
-  // 副标题日期：优先显示套餐到期时间，否则回退到更新时间
+  // 到期槽位：endsAt → 占位 "—"。所有卡片都渲染同一行，缺数据时显示 "—"，保持高度一致。
   const endsAt = quota?.plan_ends_at ?? null;
-  let dateText = "";
+  let dateText: string;
   let dateColor = "text-text-muted";
   if (endsAt) {
     const dl = daysLeft(endsAt);
@@ -113,21 +109,19 @@ export default function AccountCard({
       dateText = formatText(t.expiresAt, { date: formatDate(endsAt) });
     }
   } else {
-    const upd = profile.updated_at || profile.created_at;
-    dateText = upd ? formatText(t.updatedAt, { time: formatDateTime(upd) }) : "";
+    dateText = "—";
   }
 
-  // 是否展示额度区
-  const showQuota =
-    !!quota &&
-    (!!quota.plan_name || (quota.balances && quota.balances.length > 0));
   const hasQuotaBars = !!quota?.balances?.length;
   const isListView = viewMode === "list";
+  // 列表视图仍按"有数据才画"逻辑（卡片视图已统一为永远画骨架/数据）
+  const showQuota =
+    !!quota && (!!quota.plan_name || hasQuotaBars);
 
   if (!isListView) {
     return (
       <div
-        className={`fade-in card-hover group relative flex min-h-[220px] min-w-0 flex-col overflow-hidden rounded-xl border p-3.5 transition ${
+        className={`fade-in card-hover group relative flex h-full min-w-0 flex-col overflow-hidden rounded-xl border p-3.5 transition ${
           profile.active
             ? "border-ok/60 bg-accent/5"
             : "border-base-border bg-base-card hover:bg-base-cardhover"
@@ -164,41 +158,58 @@ export default function AccountCard({
             <span className="mt-0.5 block truncate text-[11px] text-text-secondary">
               {sub}
             </span>
-            {dateText && (
-              <span className={`mt-0.5 flex items-center gap-1 truncate text-[10px] ${dateColor}`}>
-                <CalendarClock size={10} className="shrink-0" />
-                <span className="truncate">{dateText}</span>
-              </span>
-            )}
-            {quota?.plan_name && (
-              <span
-                className={`mt-1 inline-flex max-w-full truncate rounded-full px-1.5 py-0.5 text-[10px] font-bold ${planBadgeClass(
-                  quota.plan_status
-                )}`}
-                title={quota.plan_description || ""}
-              >
-                {quota.plan_name}
-              </span>
-            )}
+            {/* 到期槽：始终渲染一行，缺数据显示 — */}
+            <span className={`mt-0.5 flex items-center gap-1 truncate text-[10px] ${dateColor}`}>
+              <CalendarClock size={10} className="shrink-0" />
+              <span className="truncate">{dateText}</span>
+            </span>
+            {/* 套餐徽章槽：始终占位（无套餐时透明保留高度） */}
+            <span
+              className={`mt-1 inline-flex max-w-full truncate rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                quota?.plan_name
+                  ? planBadgeClass(quota.plan_status)
+                  : "invisible bg-base-cardhover text-text-muted"
+              }`}
+              title={quota?.plan_description || ""}
+            >
+              {quota?.plan_name || "—"}
+            </span>
           </div>
         </div>
 
-        {/* === 中部：额度进度（紧凑模式，适应窄卡片） === */}
-        {showQuota && (
-          <div className="mt-3 flex min-h-0 flex-col gap-1.5 overflow-hidden border-t border-base-border/70 pt-2.5">
-            {quota!.balances.slice(0, 3).map((b, i) => (
-              <QuotaBar key={`${b.show_name}-${i}`} item={b} compact />
-            ))}
-            {quota?.error && hasQuotaBars && (
-              <span className="truncate text-[10px] text-warn" title={quota.error}>
-                {t.quotaRefreshFailedKeep}
-              </span>
-            )}
-          </div>
-        )}
+        {/* === 中部：额度区，始终渲染。有数据画两条，没数据画骨架灰条。 === */}
+        <div className="mt-3 flex min-h-0 flex-col gap-1.5 overflow-hidden border-t border-base-border/70 pt-2.5">
+          {hasQuotaBars
+            ? quota!.balances
+                .slice(0, 2)
+                .map((b, i) => (
+                  <QuotaBar key={`${b.show_name}-${i}`} item={b} compact />
+                ))
+            : [0, 1].map((i) => (
+                <div key={i} className="flex min-w-0 items-center gap-1.5">
+                  <span className="w-16 shrink-0 truncate text-[10px] font-medium text-text-muted">
+                    —
+                  </span>
+                  <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-base-cardhover" />
+                  <span className="shrink-0 font-mono text-[9px] leading-none text-text-muted">
+                    —
+                  </span>
+                </div>
+              ))}
+        </div>
+
+        {/* === 状态槽：始终保留一行，无错时透明占位 === */}
+        <span
+          className={`mt-1 block truncate text-[10px] ${
+            quota?.error && hasQuotaBars ? "text-warn" : "invisible text-text-muted"
+          }`}
+          title={quota?.error || ""}
+        >
+          {quota?.error && hasQuotaBars ? t.quotaRefreshFailedKeep : "—"}
+        </span>
 
         {/* === 底部行：常用操作直接露出，避免多一层菜单 === */}
-        <div className="flex items-center justify-between gap-1.5 pt-3">
+        <div className="mt-auto flex items-center justify-between gap-1.5 pt-3">
           <button
             onClick={(e) => {
               e.stopPropagation();

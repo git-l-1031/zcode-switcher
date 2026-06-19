@@ -132,11 +132,13 @@ export function ConfirmModal({
 /** 批量导出选择对话框：勾选要导出的账号，确认后回调返回 id 列表。 */
 export function BatchExportModal({
   profiles,
+  hideIdentity = false,
   onClose,
   onConfirm,
   language,
 }: {
   profiles: ProfileView[];
+  hideIdentity?: boolean;
   onClose: () => void;
   onConfirm: (ids: string[]) => void;
   language: Language;
@@ -234,12 +236,7 @@ export function BatchExportModal({
                       )}
                     </span>
                     <span className="block truncate text-[11px] text-text-muted">
-                      {p.email ||
-                        (p.phone
-                          ? formatText(t.phonePrefix, { phone: p.phone })
-                          : p.short_id
-                          ? formatText(t.idPrefix, { id: p.short_id })
-                          : "")}
+                      {hideIdentity ? t.accountIdentityHidden : identityLine(p, language)}
                     </span>
                   </span>
                 </button>
@@ -305,12 +302,14 @@ function profileStatusLabel(profile: ProfileView, quota: QuotaInfo | undefined, 
 export function BatchDeleteModal({
   profiles,
   quotas,
+  hideIdentity = false,
   onClose,
   onConfirm,
   language,
 }: {
   profiles: ProfileView[];
   quotas: Record<string, QuotaInfo>;
+  hideIdentity?: boolean;
   onClose: () => void;
   onConfirm: (ids: string[]) => void;
   language: Language;
@@ -429,7 +428,7 @@ export function BatchDeleteModal({
                       </span>
                     </span>
                     <span className="block truncate text-[11px] text-text-muted">
-                      {identityLine(p, language)}
+                      {hideIdentity ? t.accountIdentityHidden : identityLine(p, language)}
                     </span>
                   </span>
                 </button>
