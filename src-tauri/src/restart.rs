@@ -47,13 +47,16 @@ pub fn zcode_running() -> R<Option<String>> {
     Ok(path)
 }
 
-/// 重启 ZCode：kill 全部同名进程 → 等待 800ms → 用记录的路径重启。
+/// 重启 ZCode：kill 全部同名进程 → 等待 800ms → 优先按用户的快捷方式重启，回落到 exe 直拉。
 /// - 找不到运行中的 ZCode：直接尝试启动（若有已知路径）。
 /// - 找不到 exe 路径：返回错误。
+///
+/// 为什么"快捷方式优先"：用户可能通过我们的"无感切换增强"在快捷方式上加了
+/// `--remote-debugging-port=9229`，直接拉 exe 会丢失这些参数（CDP 端口不开 → 下次切号回落
+/// 到 ZCode 自身 ~30s 轮询）。所以重启时优先用同一份快捷方式的 target + arguments 拉起。
 #[tauri::command]
 pub fn restart_zcode() -> R<()> {
     // 1. 记录 exe 路径（先于 kill，否则后续枚举不到）。
-    // 找不到运行中进程时，使用上次保存的安装路径。
     let running_path = find_main_path();
     if let Some(ref p) = running_path {
         let _ = save_known_path(p);
@@ -64,13 +67,22 @@ pub fn restart_zcode() -> R<()> {
         )
     })?;
 
-    // 2. kill 全部同名进程
-    kill_all_zcode();
+    // 2. 先查快捷方式（kill 之前，避免误判）。
+    let preferred = crate::zcode_launcher::find_preferred_shortcut();
 
-    // 3. 等待进程退出（给系统一点时间释放文件锁）
+    // 3. kill 全部同名进程
+    kill_all_zcode();
     thread::sleep(Duration::from_millis(800));
 
-    // 4. 重启
+    // 4. 重启：有快捷方式就用它的 target + args；否则回落到 exe 直拉。
+    if let Some(sc) = preferred {
+        let target = if sc.target.trim().is_empty() {
+            exe_path.clone()
+        } else {
+            sc.target.clone()
+        };
+        return spawn_zcode_with_args(&target, &sc.arguments);
+    }
     spawn_zcode(&exe_path)
 }
 
@@ -272,6 +284,22 @@ fn spawn_zcode(exe_path: &str) -> R<()> {
     use std::process::Command;
 
     Command::new(exe_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| AppError::Msg(format!("重启 ZCode 失败：{}", e)))?;
+    Ok(())
+}
+
+/// 用 target + 命令行字符串拉起 ZCode（保留 --remote-debugging-port=9229 等参数）。
+/// 简单按空格切分参数；ZCode 自己的参数都是 `--key=value` 风格，无引号转义需求。
+fn spawn_zcode_with_args(exe_path: &str, args: &str) -> R<()> {
+    use std::process::Command;
+
+    let tokens: Vec<&str> = args.split_whitespace().collect();
+    Command::new(exe_path)
+        .args(&tokens)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

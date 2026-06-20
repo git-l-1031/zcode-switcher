@@ -357,6 +357,24 @@ fn atomic_write(path: &Path, data: &[u8]) -> R<()> {
     Ok(())
 }
 
+/// 原地 truncate + 写入新内容，**不**用 tmp+rename。
+///
+/// 用途：让 ZCode 的 fs.watch（chokidar 类）识别成"同一个文件 modify"，
+/// 等同于用户在 notepad 里 Ctrl+S 的事件。atomic rename 会换 inode，
+/// 部分 watcher 实现会因此漏掉变化。
+///
+/// 代价：写到一半崩溃可能让 config.json 残缺。对于切号场景，这点损失换无感切换值得；
+/// 真坏了再次启动 ZCode 会失败，用户重切一次就好。
+fn write_in_place(path: &Path, data: &[u8]) -> R<()> {
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    f.write_all(data)?;
+    f.sync_all()?;
+    Ok(())
+}
+
 // --------------------------------------------------------------------------- //
 //  仓库操作
 // --------------------------------------------------------------------------- //
@@ -458,7 +476,22 @@ fn zcode_jwt_from_credentials(cred_bytes: &[u8]) -> R<Option<String>> {
         .filter(|token| token.starts_with("eyJ")))
 }
 
+/// 切号时把 config.json 里所有 ZCode 内置 provider（builtin:zai* / builtin:bigmodel*）
+/// 的 `options.apiKey` 都换成新 JWT。
+///
+/// ZCode 的 `~/.zcode/v2/config.json` 实际有 6 个内置 key：
+///   builtin:zai, builtin:zai-start-plan, builtin:zai-coding-plan,
+///   builtin:bigmodel, builtin:bigmodel-start-plan, builtin:bigmodel-coding-plan
+///
+/// ZCode 实际拿哪条来发聊天请求，取决于用户当前选中的模型/家族。**只更新一两个**就会
+/// 出现"切了号但 ZCode 报 missing API key: builtin:zai"——典型于跨用户导入后第一次切：
+/// 接收方 ZCode 选中的是无后缀的 `builtin:zai`，但我们只动了 `builtin:zai-*`。
+///
+/// 这里用宽前缀匹配（`builtin:zai` / `builtin:bigmodel`）把这一族全覆盖，不动
+/// anthropic / openai 等第三方 provider。
 fn prepare_zai_start_plan_config_update(cred_bytes: &[u8]) -> R<Option<(PathBuf, Vec<u8>)>> {
+    const ZCODE_BUILTIN_PROVIDER_PREFIXES: &[&str] = &["builtin:zai", "builtin:bigmodel"];
+
     let Some(jwt) = zcode_jwt_from_credentials(cred_bytes)? else {
         return Ok(None);
     };
@@ -469,20 +502,31 @@ fn prepare_zai_start_plan_config_update(cred_bytes: &[u8]) -> R<Option<(PathBuf,
 
     let text = fs::read_to_string(&path)?;
     let mut cfg: Value = serde_json::from_str(&text)?;
-    let Some(options) = cfg
-        .get_mut("provider")
-        .and_then(Value::as_object_mut)
-        .and_then(|providers| providers.get_mut("builtin:zai-start-plan"))
-        .and_then(|provider| provider.get_mut("options"))
-        .and_then(Value::as_object_mut)
-    else {
+    let Some(providers) = cfg.get_mut("provider").and_then(Value::as_object_mut) else {
         return Ok(None);
     };
 
-    if options.get("apiKey").and_then(Value::as_str) == Some(jwt.as_str()) {
+    let mut changed = false;
+    for (key, prov) in providers.iter_mut() {
+        if !ZCODE_BUILTIN_PROVIDER_PREFIXES
+            .iter()
+            .any(|p| key.starts_with(p))
+        {
+            continue;
+        }
+        let Some(options) = prov.get_mut("options").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if options.get("apiKey").and_then(Value::as_str) == Some(jwt.as_str()) {
+            continue;
+        }
+        options.insert("apiKey".to_string(), Value::String(jwt.clone()));
+        changed = true;
+    }
+
+    if !changed {
         return Ok(None);
     }
-    options.insert("apiKey".to_string(), Value::String(jwt));
     let data = serde_json::to_vec_pretty(&cfg)?;
     Ok(Some((path, data)))
 }
@@ -658,12 +702,20 @@ pub fn switch_to(id: String) -> R<Profile> {
     let active_credentials = credentials_file()?;
     atomic_write(&active_credentials, &cred_bytes)?;
     if let Some((config_path, config_bytes)) = config_update {
-        if let Err(e) = atomic_write(&config_path, &config_bytes) {
+        // 不用 atomic rename：直接原地 truncate + write，让 ZCode 的 fs.watch 把它识别成
+        // "同一个文件 modify"（等同于 notepad Ctrl+S），从而重读 config.json 并重建聊天 session。
+        // atomic rename 会换 inode，部分 watcher 会漏掉变化。
+        if let Err(e) = write_in_place(&config_path, &config_bytes) {
             if let Some(backup) = credential_backup {
                 let _ = fs::copy(backup, &active_credentials);
             }
             return Err(e);
         }
+        // CDP 无感切号：切号后 +3s / +5s 通过 Chrome DevTools Protocol 远程调用
+        // ZCode 内部的 modelProviderService.refreshCodingPlanApiKey，让它立即重读 config.json
+        // 并重建聊天 session。端口未开（用户未启用快捷方式增强）时静默失败，等 ZCode 自己
+        // ~30s 轮询兜底。
+        crate::zcode_cdp::schedule_post_switch_refresh();
     }
 
     profiles[idx].updated_at = now_ts();

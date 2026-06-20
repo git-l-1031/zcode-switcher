@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   Download,
   FolderOpen,
@@ -16,7 +17,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useStore, type Theme } from "../store";
 import { api } from "../lib/api";
-import { formatText, getTexts } from "../i18n";
+import { formatText, getTexts, type Language } from "../i18n";
 import { UpdateModal } from "./Modal";
 
 function Toggle({
@@ -80,6 +81,126 @@ function Row({
       </div>
       <div className={`shrink-0 ${hasDesc ? "pt-0.5" : ""}`}>{children}</div>
     </div>
+  );
+}
+
+interface ShortcutInfo {
+  path: string;
+  target: string;
+  arguments: string;
+  hasFlag?: boolean;
+  // Rust 端字段是 has_flag，前端用相同名字传过来
+  has_flag?: boolean;
+}
+
+/**
+ * "无感切换" 合并开关：一个 toggle 同时控制 tryNoRestartSwitch 和 ZCode 快捷方式的 CDP 端口增强。
+ * - 打开：set tryNoRestartSwitch(true)，并尝试改写快捷方式追加 --remote-debugging-port=9229
+ * - 关闭：set tryNoRestartSwitch(false)（快捷方式状态不变，避免误清掉用户原有的 .lnk arguments）
+ * - 单独提供 "还原快捷方式" 按钮，让用户在不动开关的前提下清掉端口参数。
+ */
+function NoRestartSwitchRow({
+  language,
+  on,
+  setOn,
+  toast,
+}: {
+  language: Language;
+  on: boolean;
+  setOn: (v: boolean) => void;
+  toast: (text: string, kind?: "info" | "success" | "error" | "warn") => void;
+}) {
+  const t = getTexts(language);
+  const [shortcuts, setShortcuts] = useState<ShortcutInfo[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    try {
+      const arr = await invoke<ShortcutInfo[]>("zcode_launcher_scan");
+      setShortcuts(arr);
+    } catch {
+      setShortcuts([]);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const enabled = (shortcuts ?? []).filter((s) => s.has_flag ?? s.hasFlag).length;
+  const total = (shortcuts ?? []).length;
+
+  let status = t.launcherEnhanceStatusNone;
+  if (total > 0) {
+    status =
+      enabled === total
+        ? formatText(t.launcherEnhanceStatusAll, { total })
+        : formatText(t.launcherEnhanceStatusPartial, { enabled, total });
+  }
+
+  const desc = `${t.noRestartDesc}\n\n${t.launcherEnhanceDesc}\n${status}`;
+
+  const handleToggle = async () => {
+    if (busy) return;
+    if (on) {
+      setOn(false);
+      return;
+    }
+    // 打开：先翻 toggle，再尝试改写快捷方式（即使失败也不回滚 toggle，让 CDP 兜底）
+    setOn(true);
+    setBusy(true);
+    try {
+      const res = await invoke<{ modified: number; already: number; total: number }>(
+        "zcode_launcher_enable"
+      );
+      if (res.total === 0) {
+        toast(t.launcherEnhanceNoneFoundToast, "warn");
+      } else if (res.modified > 0) {
+        toast(
+          formatText(t.launcherEnhanceEnabledToast, {
+            modified: res.modified,
+            already: res.already,
+          }),
+          "success"
+        );
+      }
+      await refresh();
+    } catch (e) {
+      toast(formatText(t.launcherEnhanceFailedToast, { error: String(e) }), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRestore = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const restored = await invoke<number>("zcode_launcher_disable");
+      toast(formatText(t.launcherEnhanceDisabledToast, { restored }), "success");
+      await refresh();
+    } catch (e) {
+      toast(formatText(t.launcherEnhanceFailedToast, { error: String(e) }), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Row icon={<Zap size={15} />} title={t.noRestartTitle} desc={desc}>
+      <div className="flex flex-col items-end gap-1.5">
+        <Toggle on={on} onClick={handleToggle} disabled={busy} />
+        {enabled > 0 && (
+          <button
+            onClick={handleRestore}
+            disabled={busy}
+            className="focus-ring rounded-lg border border-base-border bg-base-card px-2.5 py-1 text-[11px] text-text-secondary transition hover:bg-base-cardhover active:scale-[0.97] disabled:opacity-50"
+          >
+            {t.launcherEnhanceDisable}
+          </button>
+        )}
+      </div>
+    </Row>
   );
 }
 
@@ -213,7 +334,7 @@ export default function SettingsPanel() {
 
   const setUpdateAvailable = useStore((s) => s.setUpdateAvailable);
 
-  const [version, setVersion] = useState("v 1.1.2");
+  const [version, setVersion] = useState("v 1.1.3");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateModal, setUpdateModal] = useState<
     | {
@@ -327,16 +448,12 @@ export default function SettingsPanel() {
 
       <SectionTitle>{t.switching}</SectionTitle>
 
-      <Row
-        icon={<Zap size={15} />}
-        title={t.noRestartTitle}
-        desc={t.noRestartDesc}
-      >
-        <Toggle
-          on={tryNoRestartSwitch}
-          onClick={() => setTryNoRestartSwitch(!tryNoRestartSwitch)}
-        />
-      </Row>
+      <NoRestartSwitchRow
+        language={language}
+        on={tryNoRestartSwitch}
+        setOn={setTryNoRestartSwitch}
+        toast={toast}
+      />
 
       <Row
         icon={<Zap size={15} />}

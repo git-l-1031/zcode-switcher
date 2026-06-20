@@ -390,17 +390,13 @@ export const useStore = create<AppState>((set, get) => {
       const { autoRestart, tryNoRestartSwitch, toast, refresh } = get();
       const t = getTexts(get().language);
       if (tryNoRestartSwitch) {
+        // 之前会调用 refreshZcodeAppServer 杀 app-server 子进程以期让 ZCode 重读 config，
+        // 实测：app-server 重启不会让聊天 token 切换（聊天 token 缓存在主进程内存里），
+        // 反而让第一次发消息卡住 5–10 秒等 app-server 复活。
+        // 现在切号的关键是 switch_to 里对 config.json 的原地 in-place 写入触发 ZCode 的 fs.watch，
+        // 这边只刷新 UI 并提示成功，不再做额外的杀进程动作。
         await refresh();
-        const report = await api.refreshZcodeAppServer().catch(() => null);
-        if (!report || report.killed === 0) {
-          toast(t.switchNoServer.replace("{name}", r.name), "warn");
-        } else if (report.recovered) {
-          toast(t.switchNoRestartSuccess.replace("{name}", r.name), "success");
-        } else if (report.restarted) {
-          toast(t.switchNotRecovered.replace("{name}", r.name), "warn");
-        } else {
-          toast(t.switchPendingManual.replace("{name}", r.name), "warn");
-        }
+        toast(t.switchNoRestartSuccess.replace("{name}", r.name), "success");
       } else if (autoRestart) {
         toast(t.switchingRestarting.replace("{name}", r.name), "info");
         await refresh();

@@ -3,6 +3,38 @@ mod jwt;
 mod profile;
 mod quota;
 mod restart;
+mod zcode_cdp;
+mod zcode_launcher;
+
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct EnableRemoteDebugResult {
+    modified: usize,
+    already: usize,
+    total: usize,
+}
+
+#[tauri::command]
+fn zcode_launcher_scan() -> Result<Vec<zcode_launcher::ShortcutInfo>, String> {
+    zcode_launcher::scan_zcode_shortcuts().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn zcode_launcher_enable() -> Result<EnableRemoteDebugResult, String> {
+    zcode_launcher::enable_remote_debug()
+        .map(|(modified, already, total)| EnableRemoteDebugResult {
+            modified,
+            already,
+            total,
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn zcode_launcher_disable() -> Result<usize, String> {
+    zcode_launcher::disable_remote_debug().map_err(|e| e.to_string())
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -30,6 +62,9 @@ pub fn run() {
             restart::zcode_running,
             restart::refresh_zcode_app_server,
             restart::restart_zcode,
+            zcode_launcher_scan,
+            zcode_launcher_enable,
+            zcode_launcher_disable,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

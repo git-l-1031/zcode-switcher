@@ -1,7 +1,7 @@
 import { X, Zap } from "lucide-react";
 import { computeGlm52PoolStats, formatQuotaUnits } from "../lib/glm52";
 import type { ProfileView, QuotaInfo } from "../lib/api";
-import { formatText, getTexts, type Language } from "../i18n";
+import { getTexts, type Language } from "../i18n";
 
 interface Props {
   profiles: ProfileView[];
@@ -58,7 +58,7 @@ export default function FloatingCapsule({
       >
         <div
           data-tauri-drag-region
-          className="mx-3 mt-[14px] flex h-[68px] cursor-move items-center gap-2.5 rounded-full border border-base-border bg-base-card px-4 shadow-xl"
+          className="mx-3 mt-[14px] flex h-[68px] cursor-move items-center gap-3 rounded-full border border-base-border bg-base-card px-4 shadow-xl"
         >
           <button
             onClick={(e) => {
@@ -78,51 +78,41 @@ export default function FloatingCapsule({
             <Zap size={16} />
           </button>
 
-          <div data-tauri-drag-region className="min-w-0 flex-1">
-            <div data-tauri-drag-region className="flex items-baseline gap-3">
-              <div data-tauri-drag-region className="shrink-0">
-                <span
-                  data-tauri-drag-region
-                  className="text-base font-black tabular-nums text-text-primary"
-                >
-                  {stats.usedAccounts}
-                </span>
-                <span
-                  data-tauri-drag-region
-                  className="ml-1 text-[10px] font-medium text-text-muted"
-                >
-                  / {stats.remainingAccounts}
-                </span>
-              </div>
-              <div
-                data-tauri-drag-region
-                className="min-w-0 truncate text-[11px] font-semibold text-text-secondary"
-              >
-                {formatText(t.floatingWindowAccountStats, {
-                  used: stats.usedAccounts,
-                  remaining: stats.remainingAccounts,
-                })}
-              </div>
-            </div>
+          <div data-tauri-drag-region className="shrink-0 leading-none">
+            <span
+              data-tauri-drag-region
+              className="text-xl font-black tabular-nums text-text-primary"
+            >
+              {stats.usedAccounts}
+            </span>
+            <span
+              data-tauri-drag-region
+              className="ml-1 text-[11px] font-semibold text-text-muted"
+            >
+              / {stats.totalAccounts}
+            </span>
+          </div>
 
-            <div data-tauri-drag-region className="mt-0.5 flex items-center gap-2">
+          <div
+            data-tauri-drag-region
+            className="flex min-w-0 flex-1 items-center gap-2"
+          >
+            <div
+              data-tauri-drag-region
+              className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-base-cardhover"
+            >
               <div
                 data-tauri-drag-region
-                className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-base-cardhover"
-              >
-                <div
-                  data-tauri-drag-region
-                  className="h-full rounded-full bg-accent transition-all duration-300"
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              <span
-                data-tauri-drag-region
-                className="shrink-0 font-mono text-[10px] text-text-muted"
-              >
-                {formatQuotaUnits(stats.usedUnits)} / {formatQuotaUnits(stats.totalUnits)}
-              </span>
+                className="h-full rounded-full bg-accent transition-all duration-300"
+                style={{ width: `${pct}%` }}
+              />
             </div>
+            <span
+              data-tauri-drag-region
+              className="shrink-0 font-mono text-[11px] tabular-nums text-text-secondary"
+            >
+              {formatQuotaUnits(stats.usedUnits)} / {formatQuotaUnits(stats.totalUnits)}
+            </span>
           </div>
 
           <button
