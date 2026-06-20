@@ -133,11 +133,8 @@ pub fn refresh_zcode_app_server() -> R<RefreshZcodeAppServerReport> {
 }
 
 fn settings_file() -> R<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| AppError::Msg("找不到用户主目录".into()))?;
-    Ok(home
-        .join(".zcode")
-        .join("v2")
-        .join("zcode-switcher-settings.json"))
+    // 与 ZCode 数据目录保持一致（env-aware：ZCODE_DATA_BASE_DIR / HOME / homedir）
+    Ok(crate::profile::zcode_v2_dir()?.join("zcode-switcher-settings.json"))
 }
 
 fn load_settings() -> RestartSettings {

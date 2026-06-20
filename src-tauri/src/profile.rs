@@ -50,9 +50,55 @@ type R<T> = std::result::Result<T, AppError>;
 // --------------------------------------------------------------------------- //
 //  路径
 // --------------------------------------------------------------------------- //
-fn zcode_v2_dir() -> R<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| AppError::Msg("找不到用户主目录".into()))?;
-    Ok(home.join(".zcode").join("v2"))
+
+/// 复刻 ZCode 自己的数据目录基址解析逻辑（见 out/main/index.js 的 getDataBaseDir）：
+///   ZCODE_DATA_BASE_DIR 环境变量 → HOME 环境变量 → os.homedir()
+///
+/// **为什么必须这样**：ZCode 用 `process.env.HOME || os.homedir()` 定位 `.zcode/v2`。
+/// 而 Rust 的 `dirs::home_dir()` 在 Windows 上只认 USERPROFILE、**忽略 HOME**。
+/// 如果用户机器上设了 HOME（装过 Git for Windows / WSL / 某些工具链都会设）或
+/// ZCODE_DATA_BASE_DIR，ZCode 读写的目录就和我们写死的 USERPROFILE 目录不是同一个，
+/// 导致 switcher 写的 credentials/config/setting 全落到 ZCode 看不到的地方 ——
+/// 表现为"任何账号都切不了"（自己的、导入的、所有模式都一样）。
+///
+/// 注意：加密密钥派生用的是 `os.homedir()`（= USERPROFILE，不看 HOME），所以 crypto.rs
+/// 仍用 `dirs::home_dir()`，**不要**改成这个函数。
+pub fn zcode_data_base_dir() -> R<PathBuf> {
+    for key in ["ZCODE_DATA_BASE_DIR", "HOME"] {
+        if let Ok(v) = std::env::var(key) {
+            let t = v.trim();
+            if !t.is_empty() && looks_like_native_path(t) {
+                return Ok(PathBuf::from(t));
+            }
+        }
+    }
+    dirs::home_dir().ok_or_else(|| AppError::Msg("找不到用户主目录".into()))
+}
+
+/// 是否是原生路径（Windows 下要求带盘符 `C:\` 或 UNC `\\`，避免把 git-bash 的
+/// MSYS 风格 `HOME=/c/Users/xxx` 误当成可用路径——ZCode（GUI 启动）也只会看到原生 HOME）。
+/// 非 Windows 平台一律放行（绝对路径即可）。
+fn looks_like_native_path(p: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let bytes = p.as_bytes();
+        // 盘符形式：X:\ 或 X:/
+        let drive = bytes.len() >= 3
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/');
+        // UNC：\\server\share
+        let unc = p.starts_with("\\\\");
+        drive || unc
+    }
+    #[cfg(not(windows))]
+    {
+        p.starts_with('/')
+    }
+}
+
+pub fn zcode_v2_dir() -> R<PathBuf> {
+    Ok(zcode_data_base_dir()?.join(".zcode").join("v2"))
 }
 
 pub fn credentials_file() -> R<PathBuf> {

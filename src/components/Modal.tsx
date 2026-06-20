@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Check, Trash2 } from "lucide-react";
+import { Check, Trash2, FileDown, KeyRound } from "lucide-react";
 import type { ProfileView, QuotaInfo } from "../lib/api";
 import { formatText, getTexts, type Language } from "../i18n";
 
@@ -560,5 +560,79 @@ function Backdrop({
     >
       {children}
     </div>
+  );
+}
+
+/**
+ * 导入方式选择面板:两张并排卡片,一张「从 JSON / ZIP 文件」,一张「OAuth 登录添加」。
+ * 点哪张回调对应的 handler,父组件再去开文件选择或启动 OAuth 流程。
+ */
+export function ImportChoiceModal({
+  language,
+  onPickFile,
+  onPickOAuth,
+  onClose,
+}: {
+  language: Language;
+  onPickFile: () => void;
+  onPickOAuth: () => void;
+  onClose: () => void;
+}) {
+  const t = getTexts(language);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <Backdrop onClose={onClose}>
+      <div
+        className="modal-in w-[480px] rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold text-text-primary">{t.importChoiceTitle}</h2>
+        <p className="mt-1 text-xs text-text-secondary">{t.importChoiceSubtitle}</p>
+
+        <div className="mt-5 grid grid-cols-2 gap-3">
+          <button
+            onClick={onPickFile}
+            className="focus-ring group flex flex-col items-start gap-2 rounded-xl border-2 border-base-border bg-base-card p-4 text-left transition hover:border-accent hover:bg-accent-soft active:scale-[0.98]"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-base-cardhover text-text-secondary group-hover:bg-accent group-hover:text-white transition">
+              <FileDown size={18} />
+            </div>
+            <div className="text-sm font-bold text-text-primary">{t.importChoiceFromFile}</div>
+            <div className="text-xs leading-relaxed text-text-muted">
+              {t.importChoiceFromFileDesc}
+            </div>
+          </button>
+
+          <button
+            onClick={onPickOAuth}
+            className="focus-ring group flex flex-col items-start gap-2 rounded-xl border-2 border-base-border bg-base-card p-4 text-left transition hover:border-accent hover:bg-accent-soft active:scale-[0.98]"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-base-cardhover text-text-secondary group-hover:bg-accent group-hover:text-white transition">
+              <KeyRound size={18} />
+            </div>
+            <div className="text-sm font-bold text-text-primary">{t.importChoiceOAuth}</div>
+            <div className="text-xs leading-relaxed text-text-muted">
+              {t.importChoiceOAuthDesc}
+            </div>
+          </button>
+        </div>
+
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={onClose}
+            className="focus-ring rounded-lg border border-base-border bg-base-card px-4 py-2 text-sm text-text-secondary transition hover:bg-base-cardhover active:scale-[0.97]"
+          >
+            {t.cancel}
+          </button>
+        </div>
+      </div>
+    </Backdrop>
   );
 }

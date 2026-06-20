@@ -1,5 +1,6 @@
 mod crypto;
 mod jwt;
+mod oauth;
 mod profile;
 mod quota;
 mod restart;
@@ -66,6 +67,8 @@ pub fn run() {
             zcode_launcher_scan,
             zcode_launcher_enable,
             zcode_launcher_disable,
+            oauth::oauth_init,
+            oauth::oauth_acquire_and_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

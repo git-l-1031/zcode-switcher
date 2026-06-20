@@ -34,11 +34,8 @@ struct LauncherBackup {
 }
 
 fn backup_file() -> R<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| AppError::Msg("找不到用户主目录".into()))?;
-    Ok(home
-        .join(".zcode")
-        .join("v2")
-        .join("zcode-switcher-launcher-backup.json"))
+    // 与 ZCode 数据目录保持一致（env-aware：ZCODE_DATA_BASE_DIR / HOME / homedir）
+    Ok(crate::profile::zcode_v2_dir()?.join("zcode-switcher-launcher-backup.json"))
 }
 
 fn load_backup() -> LauncherBackup {

@@ -182,6 +182,19 @@ const zh = {
   autoRestartBlocked: "已开启无感切换，不能同时开启自动重启 ZCode",
   restartSuccess: "ZCode 已重启",
   restartFailed: "重启失败：{error}",
+
+  oauthAddTitle: "OAuth 登录添加账号",
+  oauthPreparing: "正在请求 OAuth 授权…",
+  oauthOpening: "已打开浏览器，请登录 Z.ai 并点击「同意」",
+  oauthAdded: "已通过 OAuth 添加账号「{name}」",
+  oauthFailed: "OAuth 添加失败：{error}",
+
+  importChoiceTitle: "添加账号",
+  importChoiceSubtitle: "选择添加账号的方式",
+  importChoiceFromFile: "从 JSON / ZIP 文件",
+  importChoiceFromFileDesc: "导入之前导出的账号备份文件",
+  importChoiceOAuth: "OAuth 登录添加",
+  importChoiceOAuthDesc: "用浏览器登录 Z.ai，自动捕获 token",
 };
 
 export type Texts = typeof zh;
@@ -362,6 +375,19 @@ const en: Texts = {
   autoRestartBlocked: "No-restart switching is on, so auto restart cannot be enabled",
   restartSuccess: "ZCode restarted",
   restartFailed: "Restart failed: {error}",
+
+  oauthAddTitle: "Add account via OAuth login",
+  oauthPreparing: "Requesting OAuth authorization…",
+  oauthOpening: "Opened browser. Please sign in to Z.ai and click \"Authorize\".",
+  oauthAdded: "Added account \"{name}\" via OAuth",
+  oauthFailed: "OAuth add failed: {error}",
+
+  importChoiceTitle: "Add account",
+  importChoiceSubtitle: "Pick how to add the account",
+  importChoiceFromFile: "From JSON / ZIP file",
+  importChoiceFromFileDesc: "Restore an account from a previously exported backup",
+  importChoiceOAuth: "OAuth login",
+  importChoiceOAuthDesc: "Sign in to Z.ai in the browser and capture the token automatically",
 };
 
 const ru: Texts = {
@@ -540,6 +566,19 @@ const ru: Texts = {
   autoRestartBlocked: "Бесшовное переключение включено, поэтому автоперезапуск нельзя включить",
   restartSuccess: "ZCode перезапущен",
   restartFailed: "Ошибка перезапуска: {error}",
+
+  oauthAddTitle: "Добавить аккаунт через OAuth",
+  oauthPreparing: "Запрос OAuth-авторизации…",
+  oauthOpening: "Браузер открыт. Войдите в Z.ai и нажмите \"Авторизовать\".",
+  oauthAdded: "Аккаунт \"{name}\" добавлен через OAuth",
+  oauthFailed: "Ошибка добавления через OAuth: {error}",
+
+  importChoiceTitle: "Добавить аккаунт",
+  importChoiceSubtitle: "Выберите способ добавления",
+  importChoiceFromFile: "Из JSON / ZIP-файла",
+  importChoiceFromFileDesc: "Восстановить аккаунт из ранее экспортированного бэкапа",
+  importChoiceOAuth: "Войти через OAuth",
+  importChoiceOAuthDesc: "Войти в Z.ai в браузере и автоматически захватить токен",
 };
 
 export const texts: Record<Language, Texts> = { zh, en, ru };

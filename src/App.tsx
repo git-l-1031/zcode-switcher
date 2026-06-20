@@ -15,6 +15,7 @@ import {
   EyeOff,
 } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { check as checkUpdate } from "@tauri-apps/plugin-updater";
 import { useStore } from "./store";
 import { api, type CurrentStatus } from "./lib/api";
@@ -24,7 +25,13 @@ import zcodeLogo from "./assets/zcode-logo.png";
 import AccountCard from "./components/AccountCard";
 import EmptyState from "./components/EmptyState";
 import ToastStack from "./components/Toast";
-import { NameModal, ConfirmModal, BatchExportModal, BatchDeleteModal } from "./components/Modal";
+import {
+  NameModal,
+  ConfirmModal,
+  BatchExportModal,
+  BatchDeleteModal,
+  ImportChoiceModal,
+} from "./components/Modal";
 import SettingsPanel from "./components/SettingsPanel";
 import FloatingCapsule, {
   FLOATING_BASE_H,
@@ -40,7 +47,8 @@ interface DialogState {
     | "switch"
     | "delete"
     | "batch-export"
-    | "batch-delete";
+    | "batch-delete"
+    | "import-choice";
   targetId?: string;
   targetName?: string;
 }
@@ -241,7 +249,12 @@ export default function App() {
     setDialog({ kind: "delete", targetId: id, targetName: p.name });
   };
 
-  const handleImport = async () => {
+  /** ↓导入按钮:弹两选项面板,选「文件」走 handleImportFromFile,选「OAuth」走 handleOAuthAdd。 */
+  const handleImport = () => {
+    setDialog({ kind: "import-choice" });
+  };
+
+  const handleImportFromFile = async () => {
     const selected = await open({
       multiple: true,
       filters: [{ name: t.importFilterName, extensions: ["json", "zip"] }],
@@ -268,6 +281,39 @@ export default function App() {
       if (report.imported > 0) refreshAllQuota();
     } catch (e) {
       toast(formatText(t.importFailed, { error: String(e) }), "error");
+    }
+  };
+
+  /**
+   * OAuth 添加账号: 调 zcode.z.ai 的 CLI OAuth 接口,让用户在系统浏览器登录,
+   * 拿到 token 后直接导入成为本地 profile。
+   * - oauth_init 返回 authorize_url + poll_token
+   * - openUrl 打开浏览器
+   * - oauth_acquire_and_import 阻塞 await(默认 10 分钟截止),拿到 ready 后立刻导入
+   */
+  const handleOAuthAdd = async () => {
+    // 1) 立刻给反馈,免得用户以为按钮没响应(init 网络往返 + 浏览器冷启动加起来要 1-3 秒)
+    toast(t.oauthPreparing, "info");
+    let init;
+    try {
+      init = await api.oauthInit();
+    } catch (e) {
+      toast(formatText(t.oauthFailed, { error: String(e) }), "error");
+      return;
+    }
+    // 2) openUrl 不 await:Windows 启动 Edge/Chrome 可能要 1-2 秒,
+    //    没必要让前端等它返回。失败了 toast 失败,但成功路径立刻进 acquire。
+    openUrl(init.authorize_url).catch((e) => {
+      toast(formatText(t.oauthFailed, { error: String(e) }), "error");
+    });
+    toast(t.oauthOpening, "info");
+    try {
+      const profile = await api.oauthAcquireAndImport(init.flow_id, init.poll_token);
+      toast(formatText(t.oauthAdded, { name: profile.name }), "success");
+      await refresh(true);
+      refreshAllQuota();
+    } catch (e) {
+      toast(formatText(t.oauthFailed, { error: String(e) }), "error");
     }
   };
 
@@ -669,6 +715,21 @@ export default function App() {
           language={language}
           onClose={closeDialog}
           onConfirm={confirmBatchDelete}
+        />
+      )}
+
+      {dialog.kind === "import-choice" && (
+        <ImportChoiceModal
+          language={language}
+          onPickFile={() => {
+            closeDialog();
+            handleImportFromFile();
+          }}
+          onPickOAuth={() => {
+            closeDialog();
+            handleOAuthAdd();
+          }}
+          onClose={closeDialog}
         />
       )}
 
