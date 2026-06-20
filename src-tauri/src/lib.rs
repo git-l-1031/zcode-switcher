@@ -62,6 +62,7 @@ pub fn run() {
             restart::zcode_running,
             restart::refresh_zcode_app_server,
             restart::restart_zcode,
+            restart::kill_zcode_for_switch,
             zcode_launcher_scan,
             zcode_launcher_enable,
             zcode_launcher_disable,

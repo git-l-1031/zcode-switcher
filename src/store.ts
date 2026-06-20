@@ -30,6 +30,8 @@ interface AppState {
   autoRefreshQuota: boolean;
   /** 每隔多少分钟自动刷新额度，0 表示关闭 */
   quotaRefreshIntervalMinutes: number;
+  /** 用来重置定时刷新倒计时的 tick：手动批量刷新时 ++ */
+  scheduledRefreshSeq: number;
   /** GLM-5.2 剩余额度低于阈值时自动切换账号 */
   glm52AutoSwitchEnabled: boolean;
   /** GLM-5.2 自动切换阈值，单位：万 */
@@ -65,6 +67,8 @@ interface AppState {
 
   refreshQuota: (id: string) => Promise<void>;
   refreshAllQuota: () => Promise<void>;
+  /** 定时刷新触发：tryNoRestartSwitch 时跳过当前活跃账号 */
+  scheduledRefreshAllQuota: () => Promise<void>;
   refreshActiveQuotaForAutoSwitch: () => Promise<void>;
   setAutoRefreshQuota: (v: boolean) => void;
   setQuotaRefreshIntervalMinutes: (v: number) => void;
@@ -88,6 +92,24 @@ interface AppState {
 let toastSeq = 1;
 let glm52AutoSwitching = false;
 let lastGlm52NoCandidateAt = 0;
+
+// 全局额度刷新序列化队列：保证任意时刻只有一个账号在拉额度（按调用顺序排队）。
+// refreshAllQuota / scheduledRefreshAllQuota / refreshActiveQuotaForAutoSwitch
+// 都通过 refreshQuota 进入这个队列，自然不会和别人同时刷。
+let quotaQueueTail: Promise<void> = Promise.resolve();
+function enqueueQuotaRefresh<T>(task: () => Promise<T>): Promise<T> {
+  const next = quotaQueueTail.then(task);
+  // tail 永远 resolve，避免一次错误把后续任务全冻住
+  quotaQueueTail = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
+
+// 防止"全量刷新"叠加：scheduled 或 manual 的 refreshAll 触发期间，第二个 refreshAll
+// 直接返回，不再额外排进队列重复刷一遍。
+let refreshAllInFlight = false;
 
 function isQuotaInfo(value: unknown): value is QuotaInfo {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -322,6 +344,7 @@ export const useStore = create<AppState>((set, get) => {
     loadingQuota: {},
     autoRefreshQuota: loadAutoRefresh(),
     quotaRefreshIntervalMinutes: loadQuotaRefreshIntervalMinutes(),
+    scheduledRefreshSeq: 0,
     glm52AutoSwitchEnabled: loadGlm52AutoSwitchEnabled(),
     glm52AutoSwitchThresholdWan: loadGlm52AutoSwitchThresholdWan(),
     autoRestart: initialAutoRestart,
@@ -386,24 +409,38 @@ export const useStore = create<AppState>((set, get) => {
   switchTo: async (id) => {
     set({ busy: true });
     try {
+      const { autoRestart, tryNoRestartSwitch } = get();
+      // autoRestart 路径：先 kill 再写文件再启动。否则"写文件 → 等会儿 kill"的中间窗口里
+      // ZCode 还活着，可能感知到 config/credentials 变化、用旧 cipher 反写一次盖掉我们的。
+      // 无感切换路径不杀（需要 ZCode 活着接 CDP 注入）；都不开就只写文件不动 ZCode。
+      if (!tryNoRestartSwitch && autoRestart) {
+        try {
+          await api.killZcodeForSwitch();
+        } catch {
+          /* kill 失败也继续往下，restart_zcode 兜底还会再 kill 一次 */
+        }
+      }
       const r = await api.switchTo(id);
-      const { autoRestart, tryNoRestartSwitch, toast, refresh } = get();
+      // 不再 refresh()——直接就地翻 profiles 的 active 标记，避免一次 listProfiles +
+      // refreshAllQuota 的连锁请求。卡片显示的额度、套餐等用本地缓存就够。
+      // 顺手按 active 优先 + 更新时间倒序重排，让新活跃卡片置顶。
+      set((s) => ({
+        profiles: s.profiles
+          .map((p) => ({ ...p, active: p.id === r.id }))
+          .sort((a, b) => {
+            if (a.active !== b.active) return a.active ? -1 : 1;
+            return (b.updated_at || 0) - (a.updated_at || 0);
+          }),
+      }));
+      const { toast } = get();
       const t = getTexts(get().language);
       if (tryNoRestartSwitch) {
-        // 之前会调用 refreshZcodeAppServer 杀 app-server 子进程以期让 ZCode 重读 config，
-        // 实测：app-server 重启不会让聊天 token 切换（聊天 token 缓存在主进程内存里），
-        // 反而让第一次发消息卡住 5–10 秒等 app-server 复活。
-        // 现在切号的关键是 switch_to 里对 config.json 的原地 in-place 写入触发 ZCode 的 fs.watch，
-        // 这边只刷新 UI 并提示成功，不再做额外的杀进程动作。
-        await refresh();
         toast(t.switchNoRestartSuccess.replace("{name}", r.name), "success");
       } else if (autoRestart) {
         toast(t.switchingRestarting.replace("{name}", r.name), "info");
-        await refresh();
         await get().restartZcode();
       } else {
         toast(t.switchedManualNotice.replace("{name}", r.name), "success");
-        await refresh();
       }
       return true;
     } catch (e) {
@@ -508,49 +545,76 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   refreshQuota: async (id) => {
-    set((s) => ({ loadingQuota: { ...s.loadingQuota, [id]: true } }));
-    try {
-      const info = await api.fetchQuota(id);
-      const q: QuotaInfo = { ...info, fetched_at: Date.now() / 1000, error: null };
-      set((s) => {
-        const quotas = { ...s.quotas, [id]: q };
-        saveCachedQuotas(quotas);
-        return { quotas };
-      });
-    } catch (e) {
-      set((s) => {
-        const quotas = {
-          ...s.quotas,
-          [id]:
-            s.quotas[id]?.balances?.length > 0
-              ? { ...s.quotas[id], error: String(e), fetched_at: Date.now() / 1000 }
-              : {
-                  plan_name: null,
-                  plan_description: null,
-                  plan_status: null,
-                  plan_ends_at: null,
-                  balances: [],
-                  error: String(e),
-                  fetched_at: Date.now() / 1000,
-                },
-        };
-        saveCachedQuotas(quotas);
-        return { quotas };
-      });
-    } finally {
-      set((s) => {
-        const { [id]: _drop, ...rest } = s.loadingQuota;
-        return { loadingQuota: rest };
-      });
-    }
+    // 进队列，保证全局任意时刻只有一个账号在拉额度。
+    return enqueueQuotaRefresh(async () => {
+      set((s) => ({ loadingQuota: { ...s.loadingQuota, [id]: true } }));
+      try {
+        const info = await api.fetchQuota(id);
+        const q: QuotaInfo = { ...info, fetched_at: Date.now() / 1000, error: null };
+        set((s) => {
+          const quotas = { ...s.quotas, [id]: q };
+          saveCachedQuotas(quotas);
+          return { quotas };
+        });
+      } catch (e) {
+        set((s) => {
+          const quotas = {
+            ...s.quotas,
+            [id]:
+              s.quotas[id]?.balances?.length > 0
+                ? { ...s.quotas[id], error: String(e), fetched_at: Date.now() / 1000 }
+                : {
+                    plan_name: null,
+                    plan_description: null,
+                    plan_status: null,
+                    plan_ends_at: null,
+                    balances: [],
+                    error: String(e),
+                    fetched_at: Date.now() / 1000,
+                  },
+          };
+          saveCachedQuotas(quotas);
+          return { quotas };
+        });
+      } finally {
+        set((s) => {
+          const { [id]: _drop, ...rest } = s.loadingQuota;
+          return { loadingQuota: rest };
+        });
+      }
+    });
   },
 
   refreshAllQuota: async () => {
-    const { profiles, refreshQuota } = get();
-    for (const p of profiles) {
-      await refreshQuota(p.id);
+    // 手动批量刷：在进行中就跳过，避免叠加。完成后 bump tick 重置定时器倒计时。
+    if (refreshAllInFlight) return;
+    refreshAllInFlight = true;
+    try {
+      const { profiles, refreshQuota } = get();
+      for (const p of profiles) {
+        await refreshQuota(p.id);
+      }
+      await maybeSwitchGlm52Account(get());
+    } finally {
+      refreshAllInFlight = false;
+      set((s) => ({ scheduledRefreshSeq: s.scheduledRefreshSeq + 1 }));
     }
-    await maybeSwitchGlm52Account(get());
+  },
+
+  scheduledRefreshAllQuota: async () => {
+    // 定时触发：进行中就跳过；tryNoRestartSwitch 时跳过当前活跃账号。
+    if (refreshAllInFlight) return;
+    refreshAllInFlight = true;
+    try {
+      const { profiles, refreshQuota, tryNoRestartSwitch } = get();
+      for (const p of profiles) {
+        if (tryNoRestartSwitch && p.active) continue;
+        await refreshQuota(p.id);
+      }
+      await maybeSwitchGlm52Account(get());
+    } finally {
+      refreshAllInFlight = false;
+    }
   },
 
   refreshActiveQuotaForAutoSwitch: async () => {

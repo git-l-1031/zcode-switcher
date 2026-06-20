@@ -47,6 +47,23 @@ pub fn zcode_running() -> R<Option<String>> {
     Ok(path)
 }
 
+/// 切号前先杀 ZCode：autoRestart 路径下用它来避免"还没杀完 ZCode 已经把内存里的旧
+/// credentials/config 反写回磁盘盖掉我们的"。
+///
+/// 行为：先记录当前正在运行的 exe 路径（kill 之后就枚举不到了），kill 全部 ZCode 进程，
+/// 等 800ms。后面再调 `restart_zcode` 时它会因为枚举不到运行进程而走 `load_known_path`，
+/// 加上原本就已经检测过的快捷方式，重新拉起。
+#[tauri::command]
+pub fn kill_zcode_for_switch() -> R<()> {
+    let path = find_main_path();
+    if let Some(ref p) = path {
+        let _ = save_known_path(p);
+    }
+    kill_all_zcode();
+    thread::sleep(Duration::from_millis(800));
+    Ok(())
+}
+
 /// 重启 ZCode：kill 全部同名进程 → 等待 800ms → 优先按用户的快捷方式重启，回落到 exe 直拉。
 /// - 找不到运行中的 ZCode：直接尝试启动（若有已知路径）。
 /// - 找不到 exe 路径：返回错误。

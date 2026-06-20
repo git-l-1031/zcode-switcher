@@ -95,6 +95,25 @@ pub struct Profile {
     pub cred_file: String,
     pub created_at: f64,
     pub updated_at: f64,
+
+    /// `"zai"` | `"bigmodel"` —— 这个账号在 ZCode 里属于哪条 provider family。
+    /// 用于切号时把 `setting.json.providerFamilyDomain` 锁回对应值。
+    /// 老档案没这字段，按"zai"兜底。
+    #[serde(default)]
+    pub family: String,
+
+    /// `"oauth"` | `"apikey"` —— 这个账号的登录方式。
+    /// - `oauth`：credentials.json 里有 zcodejwttoken，apiKey 由 ZCode 自己从凭据派生
+    /// - `apikey`：用户自带 Z.ai / BigModel API Key，apiKey 直接存在 config.json 里
+    /// 老档案没这字段，按"oauth"兜底。
+    #[serde(default)]
+    pub mode: String,
+
+    /// 捕获时刻 `config.json.provider.<id>.options.apiKey` 的快照，覆盖 ZCode 6 条内置
+    /// provider。切号时按存的值原样写回。仅 apikey 模式真正会用到这里的值；oauth 模式
+    /// 切号仍以 credentials.json 解出的 JWT 为准（不依赖这个快照），但这里也会存以便回溯。
+    #[serde(default)]
+    pub provider_api_keys: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +131,15 @@ pub struct PortableAccount {
     pub exported_at: f64,
     pub profile: PortableProfile,
     pub credentials: Value,
+    /// `"zai"` | `"bigmodel"` —— 老导出 JSON 没这字段，导入时按 credentials 现场推断。
+    #[serde(default)]
+    pub family: String,
+    /// `"oauth"` | `"apikey"` —— 同上。
+    #[serde(default)]
+    pub mode: String,
+    /// 老导出 JSON 没这字段，导入时空 map；apikey 账号靠这里才能还原 apiKey。
+    #[serde(default)]
+    pub provider_api_keys: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -230,6 +258,142 @@ impl AccountIdentity {
     fn key(&self) -> Option<String> {
         identity_key(&self.email, &self.phone)
     }
+}
+
+/// ZCode 6 条内置 provider，按 family 分组。
+/// 每个 family 三条：无后缀（自带 API Key 入口）/ -start-plan / -coding-plan。
+const BUILTIN_PROVIDERS_BY_FAMILY: &[(&str, [&str; 3])] = &[
+    (
+        "zai",
+        [
+            "builtin:zai",
+            "builtin:zai-start-plan",
+            "builtin:zai-coding-plan",
+        ],
+    ),
+    (
+        "bigmodel",
+        [
+            "builtin:bigmodel",
+            "builtin:bigmodel-start-plan",
+            "builtin:bigmodel-coding-plan",
+        ],
+    ),
+];
+
+fn all_builtin_provider_ids() -> impl Iterator<Item = &'static str> {
+    BUILTIN_PROVIDERS_BY_FAMILY
+        .iter()
+        .flat_map(|(_, ids)| ids.iter().copied())
+}
+
+/// 从 credentials.json 字节里读出 `oauth:active_provider`，得到当前账号属于哪条 family。
+/// 返回 `"zai"`/`"bigmodel"`，无法识别返回 None。
+fn extract_active_provider_family(cred_bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(cred_bytes).ok()?;
+    let creds: Value = serde_json::from_str(text).ok()?;
+    let raw = creds.get("oauth:active_provider").and_then(|v| v.as_str())?;
+    let plain = crate::crypto::decrypt(raw).ok()?;
+    let trimmed = plain.trim();
+    if trimmed == "zai" || trimmed == "bigmodel" {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+/// 读当前 `~/.zcode/v2/config.json`，把 6 条 builtin provider 的 `options.apiKey`
+/// 拍成 `provider_id -> apiKey` 的 map（空字符串也照存）。读不到返回空 map。
+fn read_current_provider_api_keys() -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(path) = config_file() else {
+        return out;
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return out;
+    };
+    let Ok(cfg) = serde_json::from_str::<Value>(&text) else {
+        return out;
+    };
+    let Some(providers) = cfg.get("provider").and_then(|v| v.as_object()) else {
+        return out;
+    };
+    for id in all_builtin_provider_ids() {
+        let Some(prov) = providers.get(id) else {
+            continue;
+        };
+        let api_key = prov
+            .get("options")
+            .and_then(|v| v.get("apiKey"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        out.insert(id.to_string(), api_key);
+    }
+    out
+}
+
+/// 账号元数据：决定切号时怎么写 config.json 和 setting.json。
+#[derive(Debug, Clone)]
+struct AccountMetadata {
+    /// `"zai"` | `"bigmodel"` —— 没识别出来就是空串（兜底当 zai）。
+    family: String,
+    /// `"oauth"` | `"apikey"` —— 没识别出来就是空串（兜底当 oauth）。
+    mode: String,
+    /// 当时 config.json 里 6 条 builtin provider 的 apiKey 快照（空字符串也存）。
+    provider_api_keys: std::collections::BTreeMap<String, String>,
+}
+
+/// 综合 credentials.json + 当前 config.json 判断这个账号的 family / mode / 各 provider apiKey 快照。
+///
+/// 优先级：
+/// 1. credentials 有可解密 JWT → mode=oauth；family 取 `oauth:active_provider`（兜底 zai）
+/// 2. 没 JWT，但 `builtin:zai.options.apiKey` 非空 → mode=apikey, family=zai
+/// 3. 没 JWT，但 `builtin:bigmodel.options.apiKey` 非空 → mode=apikey, family=bigmodel
+/// 4. 都没有 → 空（按 oauth/zai 兜底，跟老版本行为一致）
+fn detect_account_metadata(cred_bytes: &[u8]) -> AccountMetadata {
+    let provider_api_keys = read_current_provider_api_keys();
+    let has_jwt = matches!(zcode_jwt_from_credentials(cred_bytes), Ok(Some(_)));
+
+    let (family, mode) = if has_jwt {
+        let fam = extract_active_provider_family(cred_bytes).unwrap_or_else(|| "zai".to_string());
+        (fam, "oauth".to_string())
+    } else if provider_api_keys
+        .get("builtin:zai")
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+    {
+        ("zai".to_string(), "apikey".to_string())
+    } else if provider_api_keys
+        .get("builtin:bigmodel")
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+    {
+        ("bigmodel".to_string(), "apikey".to_string())
+    } else {
+        (String::new(), String::new())
+    };
+
+    AccountMetadata {
+        family,
+        mode,
+        provider_api_keys,
+    }
+}
+
+/// 从 Profile 字段（含老档案兜底）反推切号要用的 family/mode。
+fn effective_family_mode(profile: &Profile) -> (String, String) {
+    let family = if profile.family.is_empty() {
+        "zai".to_string()
+    } else {
+        profile.family.clone()
+    };
+    let mode = if profile.mode.is_empty() {
+        "oauth".to_string()
+    } else {
+        profile.mode.clone()
+    };
+    (family, mode)
 }
 
 /// 从 credentials.json 字节里解密出账号身份。
@@ -425,6 +589,7 @@ fn update_profile_from_capture(
     avatar: String,
     cred_hash: String,
     cred_bytes: &[u8],
+    metadata: &AccountMetadata,
 ) -> R<Profile> {
     if !profile.cred_file.is_empty() {
         fs::write(profiles_dir()?.join(&profile.cred_file), cred_bytes)?;
@@ -438,6 +603,10 @@ fn update_profile_from_capture(
     }
     profile.cred_hash = cred_hash;
     profile.updated_at = now_ts();
+    // 重新捕获也刷新登录方式 / 各 provider apiKey 快照（覆盖旧值，因为这次才是最新状态）
+    profile.family = metadata.family.clone();
+    profile.mode = metadata.mode.clone();
+    profile.provider_api_keys = metadata.provider_api_keys.clone();
     Ok(profile.clone())
 }
 
@@ -476,27 +645,47 @@ fn zcode_jwt_from_credentials(cred_bytes: &[u8]) -> R<Option<String>> {
         .filter(|token| token.starts_with("eyJ")))
 }
 
-/// 切号时把 config.json 里所有 ZCode 内置 provider（builtin:zai* / builtin:bigmodel*）
-/// 的 `options.apiKey` 都换成新 JWT。
+/// 切号时把 config.json 里目标 family 的 builtin provider apiKey 改成对的值。
 ///
-/// ZCode 的 `~/.zcode/v2/config.json` 实际有 6 个内置 key：
-///   builtin:zai, builtin:zai-start-plan, builtin:zai-coding-plan,
-///   builtin:bigmodel, builtin:bigmodel-start-plan, builtin:bigmodel-coding-plan
+/// - `mode == "oauth"`：从 cred_bytes 解出 JWT，写到 `builtin:{family}-start-plan` /
+///   `-coding-plan` 两条；不动无后缀的 `builtin:{family}`（那条是 apikey 入口，baseURL
+///   不同，塞 JWT 不会被服务端接受）。
+/// - `mode == "apikey"`：从 profile 存的 `stored_keys` 里取 `builtin:{family}` 的值，
+///   写到 `builtin:{family}.options.apiKey`；不动带后缀的 plan provider。
 ///
-/// ZCode 实际拿哪条来发聊天请求，取决于用户当前选中的模型/家族。**只更新一两个**就会
-/// 出现"切了号但 ZCode 报 missing API key: builtin:zai"——典型于跨用户导入后第一次切：
-/// 接收方 ZCode 选中的是无后缀的 `builtin:zai`，但我们只动了 `builtin:zai-*`。
-///
-/// 这里用宽前缀匹配（`builtin:zai` / `builtin:bigmodel`）把这一族全覆盖，不动
-/// anthropic / openai 等第三方 provider。
-fn prepare_zai_start_plan_config_update(cred_bytes: &[u8]) -> R<Option<(PathBuf, Vec<u8>)>> {
-    const ZCODE_BUILTIN_PROVIDER_PREFIXES: &[&str] = &["builtin:zai", "builtin:bigmodel"];
-
-    let Some(jwt) = zcode_jwt_from_credentials(cred_bytes)? else {
-        return Ok(None);
-    };
+/// 其它 family 的 provider 一律不动，避免误清掉用户在另一家上配置的 key。
+fn prepare_config_provider_keys_update(
+    cred_bytes: &[u8],
+    family: &str,
+    mode: &str,
+    stored_keys: &std::collections::BTreeMap<String, String>,
+) -> R<Option<(PathBuf, Vec<u8>)>> {
     let path = config_file()?;
     if !path.exists() {
+        return Ok(None);
+    }
+
+    // 计算每个 provider 应该写什么 apiKey；不动的 provider 不进 map。
+    let mut target_writes: Vec<(String, String)> = Vec::new();
+    let plan_start = format!("builtin:{}-start-plan", family);
+    let plan_coding = format!("builtin:{}-coding-plan", family);
+    let plain_key = format!("builtin:{}", family);
+
+    if mode == "oauth" {
+        let Some(jwt) = zcode_jwt_from_credentials(cred_bytes)? else {
+            return Ok(None);
+        };
+        target_writes.push((plan_start, jwt.clone()));
+        target_writes.push((plan_coding, jwt));
+    } else if mode == "apikey" {
+        let Some(apikey) = stored_keys.get(&plain_key) else {
+            return Ok(None);
+        };
+        if apikey.is_empty() {
+            return Ok(None);
+        }
+        target_writes.push((plain_key, apikey.clone()));
+    } else {
         return Ok(None);
     }
 
@@ -507,20 +696,17 @@ fn prepare_zai_start_plan_config_update(cred_bytes: &[u8]) -> R<Option<(PathBuf,
     };
 
     let mut changed = false;
-    for (key, prov) in providers.iter_mut() {
-        if !ZCODE_BUILTIN_PROVIDER_PREFIXES
-            .iter()
-            .any(|p| key.starts_with(p))
-        {
+    for (target_id, target_val) in &target_writes {
+        let Some(prov) = providers.get_mut(target_id) else {
             continue;
-        }
+        };
         let Some(options) = prov.get_mut("options").and_then(Value::as_object_mut) else {
             continue;
         };
-        if options.get("apiKey").and_then(Value::as_str) == Some(jwt.as_str()) {
+        if options.get("apiKey").and_then(Value::as_str) == Some(target_val.as_str()) {
             continue;
         }
-        options.insert("apiKey".to_string(), Value::String(jwt.clone()));
+        options.insert("apiKey".to_string(), Value::String(target_val.clone()));
         changed = true;
     }
 
@@ -528,6 +714,78 @@ fn prepare_zai_start_plan_config_update(cred_bytes: &[u8]) -> R<Option<(PathBuf,
         return Ok(None);
     }
     let data = serde_json::to_vec_pretty(&cfg)?;
+    Ok(Some((path, data)))
+}
+
+/// 按账号的 family/mode patch `setting.json`：
+/// - `providerFamilyDomain = family`：让 ZCode 不禁用本 family 的 provider
+/// - `modelProviderFamilyModes[family]`：ZCode 的 `m5` filter 用这个值决定走 plan 还是
+///   apikey provider —— `"oauth"` 走 `builtin:<family>-start-plan`；**任何其它值或缺失**
+///   都走 `builtin:<family>`（apikey 入口）
+///   - oauth 模式 → 强制写入 `"oauth"`
+///   - apikey 模式 → 主动**删掉**该 key（包括之前 oauth 切号时写入的"oauth"），让 ZCode
+///     退回 apikey 路由
+///
+/// 已经一致就跳过。setting.json 不存在 / 损坏 / 不是对象都返回 None。
+fn prepare_setting_route_update(family: &str, mode: &str) -> R<Option<(PathBuf, Vec<u8>)>> {
+    if family.is_empty() {
+        return Ok(None);
+    }
+    let path = zcode_v2_dir()?.join("setting.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = fs::read_to_string(&path)?;
+    let mut s: Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let Some(obj) = s.as_object_mut() else {
+        return Ok(None);
+    };
+
+    let mut changed = false;
+
+    // providerFamilyDomain = family
+    if obj.get("providerFamilyDomain").and_then(Value::as_str) != Some(family) {
+        obj.insert(
+            "providerFamilyDomain".to_string(),
+            Value::String(family.to_string()),
+        );
+        changed = true;
+    }
+
+    // modelProviderFamilyModes[family]
+    match mode {
+        "oauth" => {
+            let modes = obj
+                .entry("modelProviderFamilyModes".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Some(modes_obj) = modes.as_object_mut() {
+                if modes_obj.get(family).and_then(Value::as_str) != Some("oauth") {
+                    modes_obj.insert(family.to_string(), Value::String("oauth".into()));
+                    changed = true;
+                }
+            }
+        }
+        "apikey" => {
+            // 主动删 family 那一项，让 ZCode 退回 apikey 路由
+            if let Some(modes_obj) = obj
+                .get_mut("modelProviderFamilyModes")
+                .and_then(Value::as_object_mut)
+            {
+                if modes_obj.remove(family).is_some() {
+                    changed = true;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    if !changed {
+        return Ok(None);
+    }
+    let data = serde_json::to_vec_pretty(&s)?;
     Ok(Some((path, data)))
 }
 
@@ -608,6 +866,7 @@ pub fn capture_current(name: String) -> R<Profile> {
     }
     let cred_bytes = fs::read(&cur)?;
     let cred_hash = sha256_bytes(&cred_bytes);
+    let metadata = detect_account_metadata(&cred_bytes);
 
     // 从 config.json 取 user_id（JWT），并尝试从解密后的 user_info 取 用户名/email/avatar
     let user_id = extract_user_id_from_config();
@@ -642,6 +901,7 @@ pub fn capture_current(name: String) -> R<Profile> {
             identity.avatar.clone(),
             cred_hash,
             &cred_bytes,
+            &metadata,
         )?;
         save_index(&profiles)?;
         return Ok(saved);
@@ -665,6 +925,9 @@ pub fn capture_current(name: String) -> R<Profile> {
         cred_file: cred_file_name,
         created_at: now_ts(),
         updated_at: now_ts(),
+        family: metadata.family.clone(),
+        mode: metadata.mode.clone(),
+        provider_api_keys: metadata.provider_api_keys.clone(),
     };
     profiles.push(profile.clone());
     save_index(&profiles)?;
@@ -690,12 +953,32 @@ pub fn switch_to(id: String) -> R<Profile> {
         ));
     }
     let cred_bytes = fs::read(&cred_path)?;
-    let config_update = prepare_zai_start_plan_config_update(&cred_bytes)?;
+    let (family, mode) = effective_family_mode(&profile);
+    let config_update = prepare_config_provider_keys_update(
+        &cred_bytes,
+        &family,
+        &mode,
+        &profile.provider_api_keys,
+    )?;
+    let setting_update = prepare_setting_route_update(&family, &mode).ok().flatten();
 
     // 备份当前
     let credential_backup = backup_current("switch")?;
     if config_update.is_some() {
         let _ = backup_current_config("switch")?;
+    }
+    if setting_update.is_some() {
+        // 备份 setting.json：路径同 config.json 备份，用不同前缀避免覆盖
+        if let Ok(setting_path) = zcode_v2_dir().map(|d| d.join("setting.json")) {
+            if setting_path.exists() {
+                if let Ok(backup_dir_path) = backup_dir() {
+                    let _ = fs::create_dir_all(&backup_dir_path);
+                    let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                    let dst = backup_dir_path.join(format!("setting.switch.{}.json", ts));
+                    let _ = fs::copy(&setting_path, &dst);
+                }
+            }
+        }
     }
 
     // 原子写入 credentials.json
@@ -711,11 +994,16 @@ pub fn switch_to(id: String) -> R<Profile> {
             }
             return Err(e);
         }
-        // CDP 无感切号：切号后 +3s / +5s 通过 Chrome DevTools Protocol 远程调用
+        // CDP 无感切号：切号后 +0.5s / +3s / +5s 通过 Chrome DevTools Protocol 远程调用
         // ZCode 内部的 modelProviderService.refreshCodingPlanApiKey，让它立即重读 config.json
         // 并重建聊天 session。端口未开（用户未启用快捷方式增强）时静默失败，等 ZCode 自己
         // ~30s 轮询兜底。
         crate::zcode_cdp::schedule_post_switch_refresh();
+    }
+    // 锁定 modelProviderFamilyModes.zai = "oauth" 与 providerFamilyDomain = "zai"，
+    // 否则跨用户导入后 ZCode 可能路由到 builtin:zai（自带 API Key 入口）报 missing API key。
+    if let Some((setting_path, setting_bytes)) = setting_update {
+        let _ = write_in_place(&setting_path, &setting_bytes);
     }
 
     profiles[idx].updated_at = now_ts();
@@ -807,6 +1095,9 @@ fn portable_account_from_profile(profile: Profile) -> R<PortableAccount> {
             avatar: profile.avatar,
         },
         credentials: decrypt_portable_credentials(cred_value)?,
+        family: profile.family,
+        mode: profile.mode,
+        provider_api_keys: profile.provider_api_keys,
     })
 }
 
@@ -820,6 +1111,10 @@ pub fn import_profile_json(json_text: String) -> R<Profile> {
 }
 
 fn import_portable_account(portable: PortableAccount) -> R<Profile> {
+    let portable_family = portable.family.clone();
+    let portable_mode = portable.mode.clone();
+    let portable_keys = portable.provider_api_keys.clone();
+
     let cred_bytes = encrypt_portable_credentials(portable.credentials)?;
     let cred_hash = sha256_bytes(&cred_bytes);
     let identity_from_creds = extract_identity_from_credentials(&cred_bytes);
@@ -851,6 +1146,38 @@ fn import_portable_account(portable: PortableAccount) -> R<Profile> {
         portable.profile.name.trim().to_string()
     };
 
+    // family/mode：优先用导出 JSON 自带的；缺则按 credentials 现场推断。
+    // 老导出 JSON 没这些字段 → 退回基于 credentials 的推断。
+    let (family, mode) = if !portable_family.is_empty() && !portable_mode.is_empty() {
+        (portable_family, portable_mode)
+    } else {
+        let active = extract_active_provider_family(&cred_bytes).unwrap_or_default();
+        let has_jwt = matches!(zcode_jwt_from_credentials(&cred_bytes), Ok(Some(_)));
+        let f = if !active.is_empty() {
+            active
+        } else if has_jwt {
+            "zai".to_string()
+        } else {
+            String::new()
+        };
+        let m = if has_jwt {
+            "oauth".to_string()
+        } else if !portable_keys
+            .get("builtin:zai")
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+            || !portable_keys
+                .get("builtin:bigmodel")
+                .map(|s| s.is_empty())
+                .unwrap_or(true)
+        {
+            "apikey".to_string()
+        } else {
+            String::new()
+        };
+        (f, m)
+    };
+
     let mut profiles = load_index();
     if let Some(existing) = profiles
         .iter()
@@ -880,6 +1207,9 @@ fn import_portable_account(portable: PortableAccount) -> R<Profile> {
         cred_file: cred_file_name,
         created_at: now_ts(),
         updated_at: now_ts(),
+        family,
+        mode,
+        provider_api_keys: portable_keys,
     };
     profiles.push(profile.clone());
     save_index(&profiles)?;

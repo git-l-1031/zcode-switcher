@@ -334,7 +334,7 @@ export default function SettingsPanel() {
 
   const setUpdateAvailable = useStore((s) => s.setUpdateAvailable);
 
-  const [version, setVersion] = useState("v 1.1.3");
+  const [version, setVersion] = useState("v 1.1.4");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateModal, setUpdateModal] = useState<
     | {

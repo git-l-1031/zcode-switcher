@@ -68,6 +68,8 @@ export default function App() {
     theme,
     refresh,
     refreshAllQuota,
+    scheduledRefreshAllQuota,
+    scheduledRefreshSeq,
     refreshActiveQuotaForAutoSwitch,
     refreshQuota,
     captureCurrent,
@@ -122,11 +124,12 @@ export default function App() {
 
   useEffect(() => {
     if (quotaRefreshIntervalMinutes <= 0) return;
+    // 依赖 scheduledRefreshSeq：手动批量刷新会 ++ 它，触发 effect 重启 → 倒计时归零。
     const timer = window.setInterval(() => {
-      refreshAllQuota();
+      scheduledRefreshAllQuota();
     }, quotaRefreshIntervalMinutes * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [quotaRefreshIntervalMinutes, refreshAllQuota]);
+  }, [quotaRefreshIntervalMinutes, scheduledRefreshAllQuota, scheduledRefreshSeq]);
 
   useEffect(() => {
     if (!glm52AutoSwitchEnabled || !activeProfile) return;

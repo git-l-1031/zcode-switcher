@@ -192,19 +192,13 @@ pub async fn try_trigger_refresh() -> bool {
     matches!(evaluate(&ws_url, INJECT_SCRIPT).await, Ok(text) if text.contains("\"ok\":true"))
 }
 
-/// 切号后定时触发：在切换开始的 +0.5s / +3s / +5s（绝对时间）各试一次。
-/// 0.5s 是为了用户操作流畅、能立刻接着发消息；3s / 5s 是兜底。
-/// 多次注入都成功只是幂等多刷几次 RPC，无副作用。
+/// 切号后单次注入 refresh：切换开始 +880ms 触发一次。
+///
+/// 之前是 +0.5s / +3s / +5s 三次兜底，实测一次就够，多刷一遍只是无意义的 RPC 噪音。
 pub fn schedule_post_switch_refresh() {
     tauri::async_runtime::spawn(async {
-        let start = std::time::Instant::now();
-        for &t_ms in &[500u64, 3000, 5000] {
-            let elapsed = start.elapsed().as_millis() as u64;
-            if elapsed < t_ms {
-                tokio::time::sleep(Duration::from_millis(t_ms - elapsed)).await;
-            }
-            let _ = try_trigger_refresh().await;
-        }
+        tokio::time::sleep(Duration::from_millis(880)).await;
+        let _ = try_trigger_refresh().await;
     });
 }
 

@@ -137,48 +137,65 @@ pub async fn fetch_quota(creds_text: &str) -> Result<QuotaInfo, String> {
     })
 }
 
-/// 发起 GET 请求；命中 429 时按 Retry-After 头退避一次后重试，其它非 2xx 直接报错。
+/// 发起 GET 请求。最多 2 次尝试：
+/// - 429：按 Retry-After 头退避后重试一次；
+/// - 请求超时 / 连接失败：立即重试一次；
+/// - 其它非 2xx 错误：直接报错，不重试。
+///
+/// 最终若两次都超时，返回错误字符串里含"请求超时"，让前端可以识别成"超时"展示。
 async fn get_with_retry(
     client: &reqwest::Client,
     url: &str,
     token: &str,
     label: &str,
 ) -> Result<reqwest::Response, String> {
-    let mut last_status: Option<reqwest::StatusCode> = None;
-    for attempt in 0..2 {
-        let resp = client
+    const MAX_ATTEMPTS: usize = 2;
+    let mut last_err: Option<String> = None;
+
+    for attempt in 0..MAX_ATTEMPTS {
+        let result = client
             .get(url)
             .header("Authorization", format!("Bearer {}", token))
             .send()
-            .await
-            .map_err(|e| format!("请求 {} 失败：{}", label, e))?;
-        let status = resp.status();
-        if status.as_u16() == 429 && attempt == 0 {
-            // Retry-After 优先识别秒数，缺省 2s，封顶 10s，避免长时间挂起。
-            let wait_secs = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.trim().parse::<u64>().ok())
-                .unwrap_or(2)
-                .clamp(1, 10);
-            drop(resp);
-            tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
-            last_status = Some(status);
-            continue;
+            .await;
+
+        match result {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.as_u16() == 429 && attempt + 1 < MAX_ATTEMPTS {
+                    // Retry-After 优先识别秒数，缺省 2s，封顶 10s，避免长时间挂起。
+                    let wait_secs = resp
+                        .headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(2)
+                        .clamp(1, 10);
+                    drop(resp);
+                    tokio::time::sleep(std::time::Duration::from_secs(wait_secs)).await;
+                    last_err = Some(format!("{} 限流重试后仍未恢复", label));
+                    continue;
+                }
+                if !status.is_success() {
+                    return Err(format!("{} 状态码 {}", label, status));
+                }
+                return Ok(resp);
+            }
+            Err(e) => {
+                let is_timeout_like = e.is_timeout() || e.is_connect();
+                if is_timeout_like && attempt + 1 < MAX_ATTEMPTS {
+                    last_err = Some("请求超时".to_string());
+                    continue;
+                }
+                if is_timeout_like {
+                    return Err("请求超时".to_string());
+                }
+                return Err(format!("请求 {} 失败：{}", label, e));
+            }
         }
-        if !status.is_success() {
-            return Err(format!("{} 状态码 {}", label, status));
-        }
-        return Ok(resp);
     }
-    Err(format!(
-        "{} 限流重试后仍未恢复（{}）",
-        label,
-        last_status
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "429".to_string())
-    ))
+
+    Err(last_err.unwrap_or_else(|| format!("{} 重试后仍未恢复", label)))
 }
 
 async fn fetch_billing_current(

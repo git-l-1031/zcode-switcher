@@ -99,6 +99,7 @@ export const api = {
   refreshZcodeAppServer: () =>
     cmd<RefreshZcodeAppServerReport>("refresh_zcode_app_server"),
   restartZcode: () => cmd<void>("restart_zcode"),
+  killZcodeForSwitch: () => cmd<void>("kill_zcode_for_switch"),
 };
 
 type Option<T> = T | null;

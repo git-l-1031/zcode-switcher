@@ -44,6 +44,15 @@ function daysLeft(endsAt: number): number {
   return Math.ceil(ms / 86400000);
 }
 
+/** 把后端 quota 错误字符串转成展示用文本：识别超时 → "刷新超时"；其它原因 → "刷新失败：xxx"。 */
+function describeQuotaError(error: string, t: ReturnType<typeof getTexts>): string {
+  const lower = error.toLowerCase();
+  if (error.includes("请求超时") || lower.includes("timeout")) {
+    return t.quotaRefreshTimeoutLabel;
+  }
+  return formatText(t.quotaRefreshFailedLabel, { reason: error });
+}
+
 function planBadgeClass(status?: string | null): string {
   const s = (status || "").toLowerCase();
   if (s.includes("active") || s.includes("有效") || s === "running") {
@@ -198,14 +207,14 @@ export default function AccountCard({
               ))}
         </div>
 
-        {/* === 状态槽：始终保留一行，无错时透明占位 === */}
+        {/* === 状态槽：始终保留一行，有错红字显示原因（超时识别），无错透明占位 === */}
         <span
           className={`mt-1 block truncate text-[10px] ${
-            quota?.error && hasQuotaBars ? "text-warn" : "invisible text-text-muted"
+            quota?.error ? "font-medium text-danger" : "invisible text-text-muted"
           }`}
           title={quota?.error || ""}
         >
-          {quota?.error && hasQuotaBars ? t.quotaRefreshFailedKeep : "—"}
+          {quota?.error ? describeQuotaError(quota.error, t) : "—"}
         </span>
 
         {/* === 底部行：常用操作直接露出，避免多一层菜单 === */}
@@ -451,14 +460,20 @@ export default function AccountCard({
             <QuotaBar key={`${b.show_name}-${i}`} item={b} />
           ))}
           {quota?.error && hasQuotaBars && (
-            <div className="text-[11px] text-warn" title={quota.error}>
-              {t.quotaRefreshFailedKeep}
+            <div
+              className="text-[11px] font-medium text-danger"
+              title={quota.error}
+            >
+              {describeQuotaError(quota.error, t)}
             </div>
           )}
         </div>
       ) : quota?.error ? (
-        <div className="border-t border-base-border/70 pt-2 text-[11px] text-danger/80">
-          {formatText(t.quotaFetchFailed, { error: quota.error })}
+        <div
+          className="border-t border-base-border/70 pt-2 text-[11px] font-medium text-danger"
+          title={quota.error}
+        >
+          {describeQuotaError(quota.error, t)}
         </div>
       ) : null}
     </div>
