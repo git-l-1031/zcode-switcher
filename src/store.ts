@@ -26,6 +26,8 @@ interface AppState {
   quotas: Record<string, QuotaInfo>;
   /** 正在拉取额度的账号 id 集合 */
   loadingQuota: Record<string, boolean>;
+  /** 刚刷新成功的账号 id（用于卡片上短暂显示绿色"刷新成功"，1 秒后自动清除） */
+  recentlyRefreshed: Record<string, boolean>;
   /** 是否在 refresh 时自动拉取所有账号的额度 */
   autoRefreshQuota: boolean;
   /** 每隔多少分钟自动刷新额度，0 表示关闭 */
@@ -58,7 +60,7 @@ interface AppState {
   busy: boolean;
   toasts: ToastMsg[];
 
-  refresh: (silent?: boolean) => Promise<void>;
+  refresh: (silent?: boolean, skipQuota?: boolean) => Promise<void>;
   captureCurrent: (name: string) => Promise<boolean>;
   switchTo: (id: string) => Promise<boolean>;
   renameProfile: (id: string, name: string) => Promise<boolean>;
@@ -67,6 +69,8 @@ interface AppState {
 
   refreshQuota: (id: string) => Promise<void>;
   refreshAllQuota: () => Promise<void>;
+  /** 只刷新还没有额度数据的账号（用于加号后只刷新新号，不打扰已有账号） */
+  refreshMissingQuota: () => Promise<void>;
   /** 定时刷新触发：tryNoRestartSwitch 时跳过当前活跃账号 */
   scheduledRefreshAllQuota: () => Promise<void>;
   refreshActiveQuotaForAutoSwitch: () => Promise<void>;
@@ -93,22 +97,14 @@ let toastSeq = 1;
 let glm52AutoSwitching = false;
 let lastGlm52NoCandidateAt = 0;
 
-// 全局额度刷新序列化队列：保证任意时刻只有一个账号在拉额度（按调用顺序排队）。
-// refreshAllQuota / scheduledRefreshAllQuota / refreshActiveQuotaForAutoSwitch
-// 都通过 refreshQuota 进入这个队列，自然不会和别人同时刷。
-let quotaQueueTail: Promise<void> = Promise.resolve();
-function enqueueQuotaRefresh<T>(task: () => Promise<T>): Promise<T> {
-  const next = quotaQueueTail.then(task);
-  // tail 永远 resolve，避免一次错误把后续任务全冻住
-  quotaQueueTail = next.then(
-    () => undefined,
-    () => undefined
-  );
-  return next;
-}
-
 // 防止"全量刷新"叠加：scheduled 或 manual 的 refreshAll 触发期间，第二个 refreshAll
-// 直接返回，不再额外排进队列重复刷一遍。
+// 直接返回，不再重复刷一遍。
+//
+// 注意：之前这里有个"全局串行队列"把每一次 refreshQuota（含用户手动点单个卡片的刷新）
+// 都排进同一条链。结果是：批量刷新进行中时，用户点某张卡片的刷新按钮会排到整批后面，
+// 赶上网络超时要等很久、连转圈都不出来 —— 表现为"刷新按钮失效"。已移除该队列：
+// 单卡片刷新立即执行（马上转圈），批量刷新仍靠 for 循环逐个 await 保证不并发。
+// 手动点击与批量项最多瞬时 2 个并发，不会回到当初 3 并发导致 429 的程度。
 let refreshAllInFlight = false;
 
 function isQuotaInfo(value: unknown): value is QuotaInfo {
@@ -342,6 +338,7 @@ export const useStore = create<AppState>((set, get) => {
     profiles: [],
     quotas: loadCachedQuotas(),
     loadingQuota: {},
+    recentlyRefreshed: {},
     autoRefreshQuota: loadAutoRefresh(),
     quotaRefreshIntervalMinutes: loadQuotaRefreshIntervalMinutes(),
     scheduledRefreshSeq: 0,
@@ -360,7 +357,7 @@ export const useStore = create<AppState>((set, get) => {
     busy: false,
     toasts: [],
 
-  refresh: async (silent = false) => {
+  refresh: async (silent = false, skipQuota = false) => {
     set({ loading: true });
     try {
       const profiles = await api.listProfiles();
@@ -370,7 +367,10 @@ export const useStore = create<AppState>((set, get) => {
         return (b.updated_at || 0) - (a.updated_at || 0);
       });
       set({ profiles, loading: false });
-      get().refreshAllQuota();
+      // skipQuota：加号场景只重载列表，由调用方自己只刷新新号，避免全量刷一遍
+      if (!skipQuota) {
+        get().refreshAllQuota();
+      }
       if (!silent) {
         get().toast(getTexts(get().language).refreshSuccess, "success");
       }
@@ -391,8 +391,8 @@ export const useStore = create<AppState>((set, get) => {
         getTexts(get().language).saveProfileSuccess.replace("{name}", p.name),
         "success"
       );
-      await get().refresh();
-      // 捕获后顺便拉一下新账号的额度
+      // 只重载列表，不全量刷额度；只刷新刚捕获的新号
+      await get().refresh(true, true);
       get().refreshQuota(p.id);
       return true;
     } catch (e) {
@@ -545,44 +545,54 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   refreshQuota: async (id) => {
-    // 进队列，保证全局任意时刻只有一个账号在拉额度。
-    return enqueueQuotaRefresh(async () => {
-      set((s) => ({ loadingQuota: { ...s.loadingQuota, [id]: true } }));
-      try {
-        const info = await api.fetchQuota(id);
-        const q: QuotaInfo = { ...info, fetched_at: Date.now() / 1000, error: null };
+    // 单个账号刷新：立即执行（马上转圈），不进任何全局队列，保证手动点击响应及时。
+    set((s) => ({ loadingQuota: { ...s.loadingQuota, [id]: true } }));
+    try {
+      const info = await api.fetchQuota(id);
+      const q: QuotaInfo = { ...info, fetched_at: Date.now() / 1000, error: null };
+      set((s) => {
+        const quotas = { ...s.quotas, [id]: q };
+        saveCachedQuotas(quotas);
+        return {
+          quotas,
+          recentlyRefreshed: { ...s.recentlyRefreshed, [id]: true },
+        };
+      });
+      // 1 秒后清掉成功标记，让绿色"刷新成功"自动消失
+      setTimeout(() => {
         set((s) => {
-          const quotas = { ...s.quotas, [id]: q };
-          saveCachedQuotas(quotas);
-          return { quotas };
+          const { [id]: _drop, ...rest } = s.recentlyRefreshed;
+          return { recentlyRefreshed: rest };
         });
-      } catch (e) {
-        set((s) => {
-          const quotas = {
-            ...s.quotas,
-            [id]:
-              s.quotas[id]?.balances?.length > 0
-                ? { ...s.quotas[id], error: String(e), fetched_at: Date.now() / 1000 }
-                : {
-                    plan_name: null,
-                    plan_description: null,
-                    plan_status: null,
-                    plan_ends_at: null,
-                    balances: [],
-                    error: String(e),
-                    fetched_at: Date.now() / 1000,
-                  },
-          };
-          saveCachedQuotas(quotas);
-          return { quotas };
-        });
-      } finally {
-        set((s) => {
-          const { [id]: _drop, ...rest } = s.loadingQuota;
-          return { loadingQuota: rest };
-        });
-      }
-    });
+      }, 1000);
+    } catch (e) {
+      set((s) => {
+        const quotas = {
+          ...s.quotas,
+          [id]:
+            s.quotas[id]?.balances?.length > 0
+              ? { ...s.quotas[id], error: String(e), fetched_at: Date.now() / 1000 }
+              : {
+                  plan_name: null,
+                  plan_description: null,
+                  plan_status: null,
+                  plan_ends_at: null,
+                  balances: [],
+                  error: String(e),
+                  fetched_at: Date.now() / 1000,
+                },
+        };
+        saveCachedQuotas(quotas);
+        // 失败时也清掉可能残留的成功标记
+        const { [id]: _ok, ...restOk } = s.recentlyRefreshed;
+        return { quotas, recentlyRefreshed: restOk };
+      });
+    } finally {
+      set((s) => {
+        const { [id]: _drop, ...rest } = s.loadingQuota;
+        return { loadingQuota: rest };
+      });
+    }
   },
 
   refreshAllQuota: async () => {
@@ -598,6 +608,18 @@ export const useStore = create<AppState>((set, get) => {
     } finally {
       refreshAllInFlight = false;
       set((s) => ({ scheduledRefreshSeq: s.scheduledRefreshSeq + 1 }));
+    }
+  },
+
+  refreshMissingQuota: async () => {
+    // 只刷新还没有额度数据的账号（新加的）。逐个 await，不并发；不动已有账号。
+    const { profiles, quotas, refreshQuota } = get();
+    for (const p of profiles) {
+      const q = quotas[p.id];
+      const hasData = !!q && ((q.balances?.length ?? 0) > 0 || !!q.plan_name);
+      if (!hasData) {
+        await refreshQuota(p.id);
+      }
     }
   },
 

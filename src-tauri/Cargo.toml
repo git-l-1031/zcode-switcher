@@ -1,6 +1,6 @@
 [package]
 name = "zcode-switcher"
-version = "1.1.5"
+version = "1.1.6"
 description = "ZCode Switcher - multi-account switching"
 authors = ["you"]
 edition = "2021"

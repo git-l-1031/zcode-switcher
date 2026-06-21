@@ -49,22 +49,30 @@ type R<T> = std::result::Result<T, AppError>;
 
 // --------------------------------------------------------------------------- //
 //  路径
+//
+//  ZCode 把"设置目录"和"数据目录"拆成两套（见 out/main/index.js）：
+//    - setting.json        → getSettingsDir() = (HOME‖USERPROFILE)/.zcode/v2
+//                            **永远 home 基址，不受 dataBaseDir 影响**
+//    - credentials.json    → getCredentialsFile = J() = getDataBaseDir()/.zcode/v2
+//      config.json         → J() 同上
+//
+//  getDataBaseDir() = dataBaseDir(读 setting.json) ‖ ZCODE_DATA_BASE_DIR 环境变量
+//                     ‖ HOME 环境变量 ‖ os.homedir()
+//
+//  **为什么必须这样**：用户可以在 ZCode 设置里把数据目录改到别的盘（如
+//  `dataBaseDir: "D:\\AppGallery\\Zcode"`），于是 ZCode 把 credentials/config 读写到
+//  `D:\AppGallery\Zcode\.zcode\v2`，但 setting.json 仍在 `C:\Users\xxx\.zcode\v2`。
+//  之前 switcher 把所有文件写死到 home，导致 credentials/config 落到 ZCode 看不到的盘 ——
+//  表现为"任何账号都切不了"（自己的、导入的、所有模式都一样）。
+//
+//  注意：加密密钥派生用的是 os.homedir()（= USERPROFILE），所以 crypto.rs 仍用
+//  dirs::home_dir()，**不要**改成这里的函数。
 // --------------------------------------------------------------------------- //
 
-/// 复刻 ZCode 自己的数据目录基址解析逻辑（见 out/main/index.js 的 getDataBaseDir）：
-///   ZCODE_DATA_BASE_DIR 环境变量 → HOME 环境变量 → os.homedir()
-///
-/// **为什么必须这样**：ZCode 用 `process.env.HOME || os.homedir()` 定位 `.zcode/v2`。
-/// 而 Rust 的 `dirs::home_dir()` 在 Windows 上只认 USERPROFILE、**忽略 HOME**。
-/// 如果用户机器上设了 HOME（装过 Git for Windows / WSL / 某些工具链都会设）或
-/// ZCODE_DATA_BASE_DIR，ZCode 读写的目录就和我们写死的 USERPROFILE 目录不是同一个，
-/// 导致 switcher 写的 credentials/config/setting 全落到 ZCode 看不到的地方 ——
-/// 表现为"任何账号都切不了"（自己的、导入的、所有模式都一样）。
-///
-/// 注意：加密密钥派生用的是 `os.homedir()`（= USERPROFILE，不看 HOME），所以 crypto.rs
-/// 仍用 `dirs::home_dir()`，**不要**改成这个函数。
-pub fn zcode_data_base_dir() -> R<PathBuf> {
-    for key in ["ZCODE_DATA_BASE_DIR", "HOME"] {
+/// home 基址：HOME 环境变量 → USERPROFILE 环境变量 → dirs::home_dir()
+/// （对应 ZCode 的 resolveUserHomeDir：`process.env.HOME || process.env.USERPROFILE || homedir`）
+fn home_base_dir() -> R<PathBuf> {
+    for key in ["HOME", "USERPROFILE"] {
         if let Ok(v) = std::env::var(key) {
             let t = v.trim();
             if !t.is_empty() && looks_like_native_path(t) {
@@ -75,19 +83,50 @@ pub fn zcode_data_base_dir() -> R<PathBuf> {
     dirs::home_dir().ok_or_else(|| AppError::Msg("找不到用户主目录".into()))
 }
 
+/// 设置目录：跟 ZCode getSettingsDir 一致 = home/.zcode/v2。setting.json 永远在这里。
+pub fn zcode_settings_dir() -> R<PathBuf> {
+    Ok(home_base_dir()?.join(".zcode").join("v2"))
+}
+
+/// 从 setting.json 读 `dataBaseDir`（ZCode 设置里的"数据目录"覆盖）。没有/读不到/空 → None。
+fn data_base_dir_from_setting() -> Option<PathBuf> {
+    let path = zcode_settings_dir().ok()?.join("setting.json");
+    let text = fs::read_to_string(&path).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let d = v.get("dataBaseDir")?.as_str()?.trim();
+    if d.is_empty() || !looks_like_native_path(d) {
+        None
+    } else {
+        Some(PathBuf::from(d))
+    }
+}
+
+/// 数据基址：跟 ZCode getDataBaseDir 一致
+///   dataBaseDir(setting.json) → ZCODE_DATA_BASE_DIR 环境变量 → HOME → USERPROFILE → homedir
+pub fn zcode_data_base_dir() -> R<PathBuf> {
+    if let Some(d) = data_base_dir_from_setting() {
+        return Ok(d);
+    }
+    if let Ok(v) = std::env::var("ZCODE_DATA_BASE_DIR") {
+        let t = v.trim();
+        if !t.is_empty() && looks_like_native_path(t) {
+            return Ok(PathBuf::from(t));
+        }
+    }
+    home_base_dir()
+}
+
 /// 是否是原生路径（Windows 下要求带盘符 `C:\` 或 UNC `\\`，避免把 git-bash 的
-/// MSYS 风格 `HOME=/c/Users/xxx` 误当成可用路径——ZCode（GUI 启动）也只会看到原生 HOME）。
+/// MSYS 风格 `/c/Users/xxx` 误当成可用路径——ZCode（GUI 启动）也只会看到原生路径）。
 /// 非 Windows 平台一律放行（绝对路径即可）。
 fn looks_like_native_path(p: &str) -> bool {
     #[cfg(windows)]
     {
         let bytes = p.as_bytes();
-        // 盘符形式：X:\ 或 X:/
         let drive = bytes.len() >= 3
             && bytes[0].is_ascii_alphabetic()
             && bytes[1] == b':'
             && (bytes[2] == b'\\' || bytes[2] == b'/');
-        // UNC：\\server\share
         let unc = p.starts_with("\\\\");
         drive || unc
     }
@@ -97,8 +136,14 @@ fn looks_like_native_path(p: &str) -> bool {
     }
 }
 
+/// 数据目录：credentials.json / config.json / 我们的档案库 / 备份都在这里。
 pub fn zcode_v2_dir() -> R<PathBuf> {
     Ok(zcode_data_base_dir()?.join(".zcode").join("v2"))
+}
+
+/// setting.json 的完整路径（设置目录，home 基址）。
+pub fn setting_file() -> R<PathBuf> {
+    Ok(zcode_settings_dir()?.join("setting.json"))
 }
 
 pub fn credentials_file() -> R<PathBuf> {
@@ -109,8 +154,11 @@ fn config_file() -> R<PathBuf> {
     Ok(zcode_v2_dir()?.join("config.json"))
 }
 
+/// 档案库放在**设置目录（home，稳定）**而非数据目录：
+/// 这样用户即便改了 ZCode 的 dataBaseDir，已保存的账号档案也不会丢；
+/// 且老版本本就把档案写在 home，升级后能继续看到原有档案。
 fn profiles_dir() -> R<PathBuf> {
-    Ok(zcode_v2_dir()?.join("account-profiles"))
+    Ok(zcode_settings_dir()?.join("account-profiles"))
 }
 
 fn profiles_index() -> R<PathBuf> {
@@ -118,7 +166,7 @@ fn profiles_index() -> R<PathBuf> {
 }
 
 fn backup_dir() -> R<PathBuf> {
-    Ok(zcode_v2_dir()?.join("account-backups"))
+    Ok(zcode_settings_dir()?.join("account-backups"))
 }
 
 // --------------------------------------------------------------------------- //
@@ -693,13 +741,19 @@ fn zcode_jwt_from_credentials(cred_bytes: &[u8]) -> R<Option<String>> {
 
 /// 切号时把 config.json 里目标 family 的 builtin provider apiKey 改成对的值。
 ///
-/// - `mode == "oauth"`：从 cred_bytes 解出 JWT，写到 `builtin:{family}-start-plan` /
-///   `-coding-plan` 两条；不动无后缀的 `builtin:{family}`（那条是 apikey 入口，baseURL
-///   不同，塞 JWT 不会被服务端接受）。
-/// - `mode == "apikey"`：从 profile 存的 `stored_keys` 里取 `builtin:{family}` 的值，
-///   写到 `builtin:{family}.options.apiKey`；不动带后缀的 plan provider。
+/// **endpoint 关键区别**（jq 实测两条 provider 名字都叫 "Z.ai - Coding Plan"，靠 baseURL 区分）：
+///   - `builtin:{family}-start-plan` → `zcode.z.ai/.../zcode-plan/anthropic`：**plan 入口**，
+///     用 zcodejwttoken。无论买的是 Start 还是 Coding Plan 都走这条，等级由服务端按 token 判定。
+///   - `builtin:{family}-coding-plan` → `api.z.ai/api/anthropic`：**自带 API Key 入口**，
+///     塞 zcodejwttoken 不工作，还会冒出一个重复的 "Coding Plan" 条目。
+///   - `builtin:{family}`（无后缀）→ 同为自带 API Key 入口。
 ///
-/// 其它 family 的 provider 一律不动，避免误清掉用户在另一家上配置的 key。
+/// - `mode == "oauth"`：JWT **只写 start-plan**。同时把 coding-plan 里**残留的 JWT 清掉**
+///   （apiKey 以 `eyJ` 开头 = 是误写进去的 plan token），但保留用户真正自带的 Z.ai API Key
+///   （非 JWT 格式，不动）。
+/// - `mode == "apikey"`：从 profile 存的 `stored_keys` 里取 `builtin:{family}` 的值写回。
+///
+/// 其它 family 的 provider 一律不动。
 fn prepare_config_provider_keys_update(
     cred_bytes: &[u8],
     family: &str,
@@ -711,8 +765,9 @@ fn prepare_config_provider_keys_update(
         return Ok(None);
     }
 
-    // 计算每个 provider 应该写什么 apiKey；不动的 provider 不进 map。
+    // (provider_id, 要写入的 apiKey)；另有"清掉残留 JWT"的目标单独处理。
     let mut target_writes: Vec<(String, String)> = Vec::new();
+    let mut clear_jwt_targets: Vec<String> = Vec::new();
     let plan_start = format!("builtin:{}-start-plan", family);
     let plan_coding = format!("builtin:{}-coding-plan", family);
     let plain_key = format!("builtin:{}", family);
@@ -721,8 +776,10 @@ fn prepare_config_provider_keys_update(
         let Some(jwt) = zcode_jwt_from_credentials(cred_bytes)? else {
             return Ok(None);
         };
-        target_writes.push((plan_start, jwt.clone()));
-        target_writes.push((plan_coding, jwt));
+        target_writes.push((plan_start, jwt));
+        // coding-plan / 无后缀 都是 api.z.ai 入口，不该有 plan JWT；清掉残留的（之前误写）
+        clear_jwt_targets.push(plan_coding);
+        clear_jwt_targets.push(plain_key);
     } else if mode == "apikey" {
         let Some(apikey) = stored_keys.get(&plain_key) else {
             return Ok(None);
@@ -755,6 +812,24 @@ fn prepare_config_provider_keys_update(
         options.insert("apiKey".to_string(), Value::String(target_val.clone()));
         changed = true;
     }
+    // 清残留 JWT：仅当该 provider 当前 apiKey 是 JWT（eyJ 开头）才清空，保留真·API Key。
+    for target_id in &clear_jwt_targets {
+        let Some(prov) = providers.get_mut(target_id) else {
+            continue;
+        };
+        let Some(options) = prov.get_mut("options").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        let is_stale_jwt = options
+            .get("apiKey")
+            .and_then(Value::as_str)
+            .map(|k| k.starts_with("eyJ"))
+            .unwrap_or(false);
+        if is_stale_jwt {
+            options.insert("apiKey".to_string(), Value::String(String::new()));
+            changed = true;
+        }
+    }
 
     if !changed {
         return Ok(None);
@@ -777,7 +852,8 @@ fn prepare_setting_route_update(family: &str, mode: &str) -> R<Option<(PathBuf, 
     if family.is_empty() {
         return Ok(None);
     }
-    let path = zcode_v2_dir()?.join("setting.json");
+    // setting.json 在设置目录（home 基址），跟数据目录可能不同盘。
+    let path = setting_file()?;
     if !path.exists() {
         return Ok(None);
     }
@@ -1014,8 +1090,8 @@ pub fn switch_to(id: String) -> R<Profile> {
         let _ = backup_current_config("switch")?;
     }
     if setting_update.is_some() {
-        // 备份 setting.json：路径同 config.json 备份，用不同前缀避免覆盖
-        if let Ok(setting_path) = zcode_v2_dir().map(|d| d.join("setting.json")) {
+        // 备份 setting.json（设置目录，home 基址）：用不同前缀避免覆盖 config 备份
+        if let Ok(setting_path) = setting_file() {
             if setting_path.exists() {
                 if let Ok(backup_dir_path) = backup_dir() {
                     let _ = fs::create_dir_all(&backup_dir_path);
@@ -1050,6 +1126,15 @@ pub fn switch_to(id: String) -> R<Profile> {
     // 否则跨用户导入后 ZCode 可能路由到 builtin:zai（自带 API Key 入口）报 missing API key。
     if let Some((setting_path, setting_bytes)) = setting_update {
         let _ = write_in_place(&setting_path, &setting_bytes);
+    }
+
+    // 删掉 coding-plan 权益缓存：它记录的是上一个账号买的是 Start Plan 还是 Coding Plan，
+    // 切号后若不清，ZCode 会按旧账号的 entitlement 显示/启用 provider（典型：切到 Start Plan
+    // 账号却仍显示 Coding Plan）。删除后 ZCode 会按新账号重新拉权益、显示正确的 plan。
+    if mode == "oauth" {
+        if let Ok(cache) = zcode_v2_dir().map(|d| d.join("coding-plan-cache.json")) {
+            let _ = fs::remove_file(&cache);
+        }
     }
 
     profiles[idx].updated_at = now_ts();

@@ -65,6 +65,7 @@ export default function App() {
     busy,
     quotas,
     loadingQuota,
+    recentlyRefreshed,
     accountViewMode,
     hideAccountIdentity,
     language,
@@ -75,7 +76,7 @@ export default function App() {
     floatingWindowScale,
     theme,
     refresh,
-    refreshAllQuota,
+    refreshMissingQuota,
     scheduledRefreshAllQuota,
     scheduledRefreshSeq,
     refreshActiveQuotaForAutoSwitch,
@@ -277,8 +278,9 @@ export default function App() {
         }),
         report.failed > 0 ? "warn" : "success"
       );
-      await refresh(true);
-      if (report.imported > 0) refreshAllQuota();
+      // 只重载列表 + 只刷新新导入的号（没有额度缓存的），不全量刷已有账号
+      await refresh(true, true);
+      if (report.imported > 0) refreshMissingQuota();
     } catch (e) {
       toast(formatText(t.importFailed, { error: String(e) }), "error");
     }
@@ -310,8 +312,9 @@ export default function App() {
     try {
       const profile = await api.oauthAcquireAndImport(init.flow_id, init.poll_token);
       toast(formatText(t.oauthAdded, { name: profile.name }), "success");
-      await refresh(true);
-      refreshAllQuota();
+      // 只重载列表 + 只刷新刚登录的新号，不全量刷
+      await refresh(true, true);
+      refreshQuota(profile.id);
     } catch (e) {
       toast(formatText(t.oauthFailed, { error: String(e) }), "error");
     }
@@ -603,6 +606,7 @@ export default function App() {
                 viewMode={accountViewMode}
                 quota={quotas[p.id]}
                 quotaLoading={!!loadingQuota[p.id]}
+                refreshOk={!!recentlyRefreshed[p.id]}
                 hideIdentity={hideAccountIdentity}
                 onSwitch={handleSwitch}
                 onRename={handleRename}

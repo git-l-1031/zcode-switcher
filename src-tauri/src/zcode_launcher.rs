@@ -34,8 +34,8 @@ struct LauncherBackup {
 }
 
 fn backup_file() -> R<PathBuf> {
-    // 与 ZCode 数据目录保持一致（env-aware：ZCODE_DATA_BASE_DIR / HOME / homedir）
-    Ok(crate::profile::zcode_v2_dir()?.join("zcode-switcher-launcher-backup.json"))
+    // switcher 内部备份放稳定的设置目录（home 基址），不随 ZCode dataBaseDir 变动
+    Ok(crate::profile::zcode_settings_dir()?.join("zcode-switcher-launcher-backup.json"))
 }
 
 fn load_backup() -> LauncherBackup {

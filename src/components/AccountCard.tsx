@@ -21,6 +21,8 @@ interface Props {
   viewMode?: "card" | "list";
   quota?: QuotaInfo;
   quotaLoading?: boolean;
+  /** 刚刷新成功：短暂显示绿色"刷新成功" */
+  refreshOk?: boolean;
   hideIdentity?: boolean;
   onSwitch: (id: string) => void;
   onRename: (id: string) => void;
@@ -44,13 +46,37 @@ function daysLeft(endsAt: number): number {
   return Math.ceil(ms / 86400000);
 }
 
-/** 把后端 quota 错误字符串转成展示用文本：识别超时 → "刷新超时"；其它原因 → "刷新失败：xxx"。 */
-function describeQuotaError(error: string, t: ReturnType<typeof getTexts>): string {
+/**
+ * 把后端 quota 错误转成展示用 {文本, 颜色类}。三类：
+ * - 超时 → 黄色 "刷新超时"（瞬时网络问题，重试即可）
+ * - 从没成功拉到过额度（balances 为空，多见于刚添加、还没在 ZCode 登录过的新号）
+ *   → 黄色 "请切换并登录 ZCode 后重试"
+ * - 其它（之前有额度、现在出错 / 过期）→ 红色 "刷新失败：xxx"
+ */
+function describeQuotaError(
+  error: string,
+  t: ReturnType<typeof getTexts>,
+  hasEverHadQuota: boolean
+): { text: string; className: string } {
   const lower = error.toLowerCase();
-  if (error.includes("请求超时") || lower.includes("timeout")) {
-    return t.quotaRefreshTimeoutLabel;
+  const isTimeout = error.includes("请求超时") || lower.includes("timeout");
+  const isRateLimited =
+    error.includes("429") ||
+    error.includes("限流") ||
+    lower.includes("too many requests");
+  if (isTimeout) {
+    return { text: t.quotaRefreshTimeoutLabel, className: "text-warn" };
   }
-  return formatText(t.quotaRefreshFailedLabel, { reason: error });
+  if (isRateLimited) {
+    return { text: t.quotaRateLimited, className: "text-warn" };
+  }
+  if (!hasEverHadQuota) {
+    return { text: t.quotaNeedLogin, className: "text-warn" };
+  }
+  return {
+    text: formatText(t.quotaRefreshFailedLabel, { reason: error }),
+    className: "text-danger",
+  };
 }
 
 function planBadgeClass(status?: string | null): string {
@@ -71,6 +97,7 @@ export default function AccountCard({
   viewMode = "card",
   quota,
   quotaLoading,
+  refreshOk = false,
   hideIdentity = false,
   onSwitch,
   onRename,
@@ -126,6 +153,11 @@ export default function AccountCard({
   // 列表视图仍按"有数据才画"逻辑（卡片视图已统一为永远画骨架/数据）
   const showQuota =
     !!quota && (!!quota.plan_name || hasQuotaBars);
+
+  // 错误展示：超时红 / 从没拉到额度黄(提示去登录) / 其它红。hasQuotaBars 作为"是否曾有额度"。
+  const quotaErr = quota?.error
+    ? describeQuotaError(quota.error, t, hasQuotaBars)
+    : null;
 
   if (!isListView) {
     return (
@@ -207,14 +239,18 @@ export default function AccountCard({
               ))}
         </div>
 
-        {/* === 状态槽：始终保留一行，有错红字显示原因（超时识别），无错透明占位 === */}
+        {/* === 状态槽：始终保留一行。优先错误(红/黄)，其次刚刷新成功(绿)，否则透明占位 === */}
         <span
           className={`mt-1 block truncate text-[10px] ${
-            quota?.error ? "font-medium text-danger" : "invisible text-text-muted"
+            quotaErr
+              ? `font-medium ${quotaErr.className}`
+              : refreshOk
+              ? "font-medium text-ok"
+              : "invisible text-text-muted"
           }`}
           title={quota?.error || ""}
         >
-          {quota?.error ? describeQuotaError(quota.error, t) : "—"}
+          {quotaErr ? quotaErr.text : refreshOk ? t.quotaRefreshOk : "—"}
         </span>
 
         {/* === 底部行：常用操作直接露出，避免多一层菜单 === */}
@@ -459,21 +495,27 @@ export default function AccountCard({
           {quota!.balances.slice(0, isListView ? 2 : 4).map((b, i) => (
             <QuotaBar key={`${b.show_name}-${i}`} item={b} />
           ))}
-          {quota?.error && hasQuotaBars && (
+          {quotaErr ? (
             <div
-              className="text-[11px] font-medium text-danger"
-              title={quota.error}
+              className={`text-[11px] font-medium ${quotaErr.className}`}
+              title={quota?.error || ""}
             >
-              {describeQuotaError(quota.error, t)}
+              {quotaErr.text}
             </div>
-          )}
+          ) : refreshOk ? (
+            <div className="text-[11px] font-medium text-ok">{t.quotaRefreshOk}</div>
+          ) : null}
         </div>
-      ) : quota?.error ? (
+      ) : quotaErr ? (
         <div
-          className="border-t border-base-border/70 pt-2 text-[11px] font-medium text-danger"
-          title={quota.error}
+          className={`border-t border-base-border/70 pt-2 text-[11px] font-medium ${quotaErr.className}`}
+          title={quota?.error || ""}
         >
-          {describeQuotaError(quota.error, t)}
+          {quotaErr.text}
+        </div>
+      ) : refreshOk ? (
+        <div className="border-t border-base-border/70 pt-2 text-[11px] font-medium text-ok">
+          {t.quotaRefreshOk}
         </div>
       ) : null}
     </div>

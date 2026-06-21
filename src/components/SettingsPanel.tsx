@@ -138,7 +138,7 @@ function NoRestartSwitchRow({
         : formatText(t.launcherEnhanceStatusPartial, { enabled, total });
   }
 
-  const desc = `${t.noRestartDesc}\n\n${t.launcherEnhanceDesc}\n${status}`;
+  const desc = `${t.noRestartDesc}\n${status}`;
 
   const handleToggle = async () => {
     if (busy) return;
@@ -334,7 +334,7 @@ export default function SettingsPanel() {
 
   const setUpdateAvailable = useStore((s) => s.setUpdateAvailable);
 
-  const [version, setVersion] = useState("v 1.1.5");
+  const [version, setVersion] = useState("v 1.1.6");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateModal, setUpdateModal] = useState<
     | {

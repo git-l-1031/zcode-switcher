@@ -101,7 +101,9 @@ const INJECT_SCRIPT: &str = r#"(async () => {
     if (svc) window.__zcsModelProviderService = svc;
   }
   if (!svc) return { ok: false, cached: false, err: 'service-not-found' };
-  const planIds = ['builtin:zai-start-plan', 'builtin:zai-coding-plan'];
+  // 只刷 start-plan：它是 plan 入口（zcode.z.ai/zcode-plan），ZCode 内部
+  // refreshCodingPlanApiKey 会自动连带处理同一 family，无需重复调 coding-plan。
+  const planIds = ['builtin:zai-start-plan'];
   const refreshed = [];
   const errs = [];
   for (const id of planIds) {
