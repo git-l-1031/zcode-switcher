@@ -7,11 +7,21 @@ import { getTexts, type Language } from "./i18n";
 export type ToastKind = "info" | "success" | "error" | "warn";
 export type Theme = "dark" | "light";
 export type AccountViewMode = "card" | "list";
+export type AccountSortMode =
+  | "name-asc"
+  | "name-desc"
+  | "quota-desc"
+  | "quota-asc"
+  | "expiry-asc";
+const DEFAULT_ACCOUNT_SORT_MODE: AccountSortMode = "name-asc";
 
 const FLOATING_WINDOW_STORAGE_KEY = "zcs:floatingWindowMode";
 
-const GLM52_CANDIDATE_MIN_UNITS = 1_500_000;
+const GLM52_THRESHOLD_WAN_MIN = 10;
+const GLM52_THRESHOLD_WAN_MAX = 100;
 const GLM52_DEFAULT_THRESHOLD_WAN = 35;
+const DEFAULT_QUOTA_REFRESH_INTERVAL_MINUTES = 10;
+const DEFAULT_THEME: Theme = "light";
 const QUOTA_CACHE_KEY = "zcs:quotas";
 
 interface ToastMsg {
@@ -22,39 +32,31 @@ interface ToastMsg {
 
 interface AppState {
   profiles: ProfileView[];
-  /** 每个账号 id 对应的额度信息 */
+  /** 账号 id → 额度信息 */
   quotas: Record<string, QuotaInfo>;
-  /** 正在拉取额度的账号 id 集合 */
+  /** 正在拉取额度的账号 id */
   loadingQuota: Record<string, boolean>;
-  /** 刚刷新成功的账号 id（用于卡片上短暂显示绿色"刷新成功"，1 秒后自动清除） */
+  /** 刚刷新成功的账号 id，1 秒后自动清除 */
   recentlyRefreshed: Record<string, boolean>;
-  /** 是否在 refresh 时自动拉取所有账号的额度 */
   autoRefreshQuota: boolean;
-  /** 每隔多少分钟自动刷新额度，0 表示关闭 */
+  /** 自动刷新额度的间隔分钟数，0 表示关闭 */
   quotaRefreshIntervalMinutes: number;
-  /** 用来重置定时刷新倒计时的 tick：手动批量刷新时 ++ */
+  /** 用来重置定时器倒计时的 tick */
   scheduledRefreshSeq: number;
-  /** GLM-5.2 剩余额度低于阈值时自动切换账号 */
   glm52AutoSwitchEnabled: boolean;
-  /** GLM-5.2 自动切换阈值，单位：万 */
+  /** 自动切换阈值，单位：万 */
   glm52AutoSwitchThresholdWan: number;
-  /** 切换账号后是否自动重启 ZCode */
   autoRestart: boolean;
-  /** 切换账号后是否先尝试不重启 */
   tryNoRestartSwitch: boolean;
-  /** 当前主题 */
   theme: Theme;
-  /** 悬浮窗模式：无感切换下的胶囊统计窗 */
   floatingWindowMode: boolean;
   /** 悬浮窗缩放比例，1 为原始大小 */
   floatingWindowScale: number;
-  /** 启动自动检测发现的新版本 */
   updateAvailable: boolean;
-  /** 账号展示方式 */
   accountViewMode: AccountViewMode;
-  /** 是否隐藏账号卡片里的邮箱和手机号 */
+  /** 账号列表排序方式（当前账号始终置顶） */
+  accountSortMode: AccountSortMode;
   hideAccountIdentity: boolean;
-  /** 界面语言 */
   language: Language;
   loading: boolean;
   busy: boolean;
@@ -69,9 +71,9 @@ interface AppState {
 
   refreshQuota: (id: string) => Promise<void>;
   refreshAllQuota: () => Promise<void>;
-  /** 只刷新还没有额度数据的账号（用于加号后只刷新新号，不打扰已有账号） */
+  /** 只刷新还没有额度数据的账号 */
   refreshMissingQuota: () => Promise<void>;
-  /** 定时刷新触发：tryNoRestartSwitch 时跳过当前活跃账号 */
+  /** 定时触发的批量刷新 */
   scheduledRefreshAllQuota: () => Promise<void>;
   refreshActiveQuotaForAutoSwitch: () => Promise<void>;
   setAutoRefreshQuota: (v: boolean) => void;
@@ -85,6 +87,7 @@ interface AppState {
   setFloatingWindowScale: (v: number) => void;
   setUpdateAvailable: (v: boolean) => void;
   setAccountViewMode: (v: AccountViewMode) => void;
+  setAccountSortMode: (v: AccountSortMode) => void;
   setHideAccountIdentity: (v: boolean) => void;
   setLanguage: (v: Language) => void;
   restartZcode: () => Promise<boolean>;
@@ -97,14 +100,6 @@ let toastSeq = 1;
 let glm52AutoSwitching = false;
 let lastGlm52NoCandidateAt = 0;
 
-// 防止"全量刷新"叠加：scheduled 或 manual 的 refreshAll 触发期间，第二个 refreshAll
-// 直接返回，不再重复刷一遍。
-//
-// 注意：之前这里有个"全局串行队列"把每一次 refreshQuota（含用户手动点单个卡片的刷新）
-// 都排进同一条链。结果是：批量刷新进行中时，用户点某张卡片的刷新按钮会排到整批后面，
-// 赶上网络超时要等很久、连转圈都不出来 —— 表现为"刷新按钮失效"。已移除该队列：
-// 单卡片刷新立即执行（马上转圈），批量刷新仍靠 for 循环逐个 await 保证不并发。
-// 手动点击与批量项最多瞬时 2 个并发，不会回到当初 3 并发导致 429 的程度。
 let refreshAllInFlight = false;
 
 function isQuotaInfo(value: unknown): value is QuotaInfo {
@@ -162,10 +157,12 @@ function loadTryNoRestartSwitch(): boolean {
 }
 function loadQuotaRefreshIntervalMinutes(): number {
   try {
-    const n = Number(localStorage.getItem("zcs:quotaRefreshIntervalMinutes"));
+    const saved = localStorage.getItem("zcs:quotaRefreshIntervalMinutes");
+    if (saved === null) return DEFAULT_QUOTA_REFRESH_INTERVAL_MINUTES;
+    const n = Number(saved);
     return Number.isFinite(n) && n > 0 ? Math.min(1440, Math.round(n)) : 0;
   } catch {
-    return 0;
+    return DEFAULT_QUOTA_REFRESH_INTERVAL_MINUTES;
   }
 }
 function loadGlm52AutoSwitchEnabled(): boolean {
@@ -175,11 +172,14 @@ function loadGlm52AutoSwitchEnabled(): boolean {
     return false;
   }
 }
+function clampGlm52ThresholdWan(n: number): number {
+  return Math.max(GLM52_THRESHOLD_WAN_MIN, Math.min(GLM52_THRESHOLD_WAN_MAX, Math.round(n)));
+}
 function loadGlm52AutoSwitchThresholdWan(): number {
   try {
     const n = Number(localStorage.getItem("zcs:glm52AutoSwitchThresholdWan"));
     return Number.isFinite(n) && n > 0
-      ? Math.min(300, Math.round(n))
+      ? clampGlm52ThresholdWan(n)
       : GLM52_DEFAULT_THRESHOLD_WAN;
   } catch {
     return GLM52_DEFAULT_THRESHOLD_WAN;
@@ -188,9 +188,9 @@ function loadGlm52AutoSwitchThresholdWan(): number {
 function loadTheme(): Theme {
   try {
     const t = localStorage.getItem("zcs:theme");
-    return t === "light" ? "light" : "dark";
+    return t === "dark" || t === "light" ? t : DEFAULT_THEME;
   } catch {
-    return "dark";
+    return DEFAULT_THEME;
   }
 }
 function loadFloatingWindowMode(): boolean {
@@ -224,6 +224,21 @@ function loadAccountViewMode(): AccountViewMode {
     return "card";
   }
 }
+const VALID_SORT_MODES: readonly AccountSortMode[] = [
+  "name-asc",
+  "name-desc",
+  "quota-desc",
+  "quota-asc",
+  "expiry-asc",
+];
+function loadAccountSortMode(): AccountSortMode {
+  try {
+    const v = localStorage.getItem("zcs:accountSortMode") as AccountSortMode | null;
+    return v && VALID_SORT_MODES.includes(v) ? v : DEFAULT_ACCOUNT_SORT_MODE;
+  } catch {
+    return DEFAULT_ACCOUNT_SORT_MODE;
+  }
+}
 function loadHideAccountIdentity(): boolean {
   try {
     return localStorage.getItem("zcs:hideAccountIdentity") === "1";
@@ -240,7 +255,7 @@ function loadLanguage(): Language {
   }
 }
 
-/** 把主题应用到 <html data-theme> */
+/** 把主题应用到 <html data-theme> 及窗口背景 */
 function applyTheme(theme: Theme) {
   const bg = theme === "dark" ? "#111317" : "#f6f7f9";
   const floating = document.documentElement.dataset.windowMode === "floating";
@@ -251,12 +266,12 @@ function applyTheme(theme: Theme) {
     document.body.style.backgroundColor = domBg;
     document.getElementById("root")?.style.setProperty("background-color", domBg);
   } catch {
-    /* SSR / 非 DOM 环境 */
+    /* ignore */
   }
   getCurrentWindow()
     .setBackgroundColor(bg)
     .catch(() => {
-      /* 浏览器预览或旧版运行时忽略 */
+      /* ignore */
     });
 }
 
@@ -282,7 +297,7 @@ async function maybeSwitchGlm52Account(state: AppState) {
     .filter(
       (item) =>
         item.remaining !== null &&
-        item.remaining > GLM52_CANDIDATE_MIN_UNITS &&
+        item.remaining > threshold &&
         !item.quota?.error
     )
     .sort((a, b) => (b.remaining ?? 0) - (a.remaining ?? 0))[0];
@@ -291,7 +306,13 @@ async function maybeSwitchGlm52Account(state: AppState) {
     const now = Date.now();
     if (now - lastGlm52NoCandidateAt > 60_000) {
       lastGlm52NoCandidateAt = now;
-      state.toast(t.glmNoCandidate, "warn");
+      state.toast(
+        t.glmNoCandidate.replace(
+          "{threshold}",
+          String(state.glm52AutoSwitchThresholdWan)
+        ),
+        "warn"
+      );
     }
     return;
   }
@@ -311,7 +332,7 @@ async function maybeSwitchGlm52Account(state: AppState) {
 }
 
 export const useStore = create<AppState>((set, get) => {
-  // 初始化时立即应用主题，避免闪烁
+  // 立即应用主题，避免首屏闪烁
   const initialTheme = loadTheme();
   const initialLanguage = loadLanguage();
   const initialTryNoRestartSwitch = loadTryNoRestartSwitch();
@@ -351,6 +372,7 @@ export const useStore = create<AppState>((set, get) => {
     floatingWindowScale: loadFloatingWindowScale(),
     updateAvailable: false,
     accountViewMode: loadAccountViewMode(),
+    accountSortMode: loadAccountSortMode(),
     hideAccountIdentity: loadHideAccountIdentity(),
     language: initialLanguage,
     loading: true,
@@ -361,13 +383,8 @@ export const useStore = create<AppState>((set, get) => {
     set({ loading: true });
     try {
       const profiles = await api.listProfiles();
-      // 排序：活跃的排第一，然后按更新时间倒序
-      profiles.sort((a, b) => {
-        if (a.active !== b.active) return a.active ? -1 : 1;
-        return (b.updated_at || 0) - (a.updated_at || 0);
-      });
       set({ profiles, loading: false });
-      // skipQuota：加号场景只重载列表，由调用方自己只刷新新号，避免全量刷一遍
+      // skipQuota：只重载列表，由调用方按需刷新新号
       if (!skipQuota) {
         get().refreshAllQuota();
       }
@@ -391,7 +408,7 @@ export const useStore = create<AppState>((set, get) => {
         getTexts(get().language).saveProfileSuccess.replace("{name}", p.name),
         "success"
       );
-      // 只重载列表，不全量刷额度；只刷新刚捕获的新号
+      // 只刷新刚捕获的新号
       await get().refresh(true, true);
       get().refreshQuota(p.id);
       return true;
@@ -410,27 +427,18 @@ export const useStore = create<AppState>((set, get) => {
     set({ busy: true });
     try {
       const { autoRestart, tryNoRestartSwitch } = get();
-      // autoRestart 路径：先 kill 再写文件再启动。否则"写文件 → 等会儿 kill"的中间窗口里
-      // ZCode 还活着，可能感知到 config/credentials 变化、用旧 cipher 反写一次盖掉我们的。
-      // 无感切换路径不杀（需要 ZCode 活着接 CDP 注入）；都不开就只写文件不动 ZCode。
+      // 自动重启路径：先关再写再启，避免写入期间被覆盖
       if (!tryNoRestartSwitch && autoRestart) {
         try {
           await api.killZcodeForSwitch();
         } catch {
-          /* kill 失败也继续往下，restart_zcode 兜底还会再 kill 一次 */
+          /* ignore */
         }
       }
       const r = await api.switchTo(id);
-      // 不再 refresh()——直接就地翻 profiles 的 active 标记，避免一次 listProfiles +
-      // refreshAllQuota 的连锁请求。卡片显示的额度、套餐等用本地缓存就够。
-      // 顺手按 active 优先 + 更新时间倒序重排，让新活跃卡片置顶。
+      // 就地翻 active 标记，排序交给渲染层
       set((s) => ({
-        profiles: s.profiles
-          .map((p) => ({ ...p, active: p.id === r.id }))
-          .sort((a, b) => {
-            if (a.active !== b.active) return a.active ? -1 : 1;
-            return (b.updated_at || 0) - (a.updated_at || 0);
-          }),
+        profiles: s.profiles.map((p) => ({ ...p, active: p.id === r.id })),
       }));
       const { toast } = get();
       const t = getTexts(get().language);
@@ -545,7 +553,7 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   refreshQuota: async (id) => {
-    // 单个账号刷新：立即执行（马上转圈），不进任何全局队列，保证手动点击响应及时。
+    // 单个账号刷新：立即执行，不进队列，保证手动点击响应及时
     set((s) => ({ loadingQuota: { ...s.loadingQuota, [id]: true } }));
     try {
       const info = await api.fetchQuota(id);
@@ -558,7 +566,7 @@ export const useStore = create<AppState>((set, get) => {
           recentlyRefreshed: { ...s.recentlyRefreshed, [id]: true },
         };
       });
-      // 1 秒后清掉成功标记，让绿色"刷新成功"自动消失
+      // 1 秒后清掉成功标记
       setTimeout(() => {
         set((s) => {
           const { [id]: _drop, ...rest } = s.recentlyRefreshed;
@@ -583,7 +591,7 @@ export const useStore = create<AppState>((set, get) => {
                 },
         };
         saveCachedQuotas(quotas);
-        // 失败时也清掉可能残留的成功标记
+        // 失败时清掉可能残留的成功标记
         const { [id]: _ok, ...restOk } = s.recentlyRefreshed;
         return { quotas, recentlyRefreshed: restOk };
       });
@@ -596,7 +604,7 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   refreshAllQuota: async () => {
-    // 手动批量刷：在进行中就跳过，避免叠加。完成后 bump tick 重置定时器倒计时。
+    // 进行中跳过，完成后 bump tick 重置定时器倒计时
     if (refreshAllInFlight) return;
     refreshAllInFlight = true;
     try {
@@ -612,7 +620,7 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   refreshMissingQuota: async () => {
-    // 只刷新还没有额度数据的账号（新加的）。逐个 await，不并发；不动已有账号。
+    // 只刷新还没有额度数据的账号，逐个 await
     const { profiles, quotas, refreshQuota } = get();
     for (const p of profiles) {
       const q = quotas[p.id];
@@ -624,7 +632,7 @@ export const useStore = create<AppState>((set, get) => {
   },
 
   scheduledRefreshAllQuota: async () => {
-    // 定时触发：进行中就跳过；tryNoRestartSwitch 时跳过当前活跃账号。
+    // 进行中跳过；tryNoRestartSwitch 时跳过当前活跃账号
     if (refreshAllInFlight) return;
     refreshAllInFlight = true;
     try {
@@ -677,7 +685,7 @@ export const useStore = create<AppState>((set, get) => {
   setGlm52AutoSwitchThresholdWan: (v) => {
     const wan =
       Number.isFinite(v) && v > 0
-        ? Math.min(300, Math.round(v))
+        ? clampGlm52ThresholdWan(v)
         : GLM52_DEFAULT_THRESHOLD_WAN;
     try {
       localStorage.setItem("zcs:glm52AutoSwitchThresholdWan", String(wan));
@@ -771,6 +779,15 @@ export const useStore = create<AppState>((set, get) => {
       /* ignore */
     }
     set({ accountViewMode: v });
+  },
+
+  setAccountSortMode: (v) => {
+    try {
+      localStorage.setItem("zcs:accountSortMode", v);
+    } catch {
+      /* ignore */
+    }
+    set({ accountSortMode: v });
   },
 
   setHideAccountIdentity: (v) => {

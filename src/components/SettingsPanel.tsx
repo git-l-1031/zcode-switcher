@@ -89,16 +89,11 @@ interface ShortcutInfo {
   target: string;
   arguments: string;
   hasFlag?: boolean;
-  // Rust 端字段是 has_flag，前端用相同名字传过来
+  // 兼容后端字段命名
   has_flag?: boolean;
 }
 
-/**
- * "无感切换" 合并开关：一个 toggle 同时控制 tryNoRestartSwitch 和 ZCode 快捷方式的 CDP 端口增强。
- * - 打开：set tryNoRestartSwitch(true)，并尝试改写快捷方式追加 --remote-debugging-port=9229
- * - 关闭：set tryNoRestartSwitch(false)（快捷方式状态不变，避免误清掉用户原有的 .lnk arguments）
- * - 单独提供 "还原快捷方式" 按钮，让用户在不动开关的前提下清掉端口参数。
- */
+/** 无感切换合并开关：一个 toggle 同时控制设置项和快捷方式增强；附带"还原快捷方式"按钮 */
 function NoRestartSwitchRow({
   language,
   on,
@@ -146,7 +141,7 @@ function NoRestartSwitchRow({
       setOn(false);
       return;
     }
-    // 打开：先翻 toggle，再尝试改写快捷方式（即使失败也不回滚 toggle，让 CDP 兜底）
+    // 打开：先翻 toggle，再改快捷方式；改写失败也不回滚 toggle
     setOn(true);
     setBusy(true);
     try {
@@ -409,7 +404,7 @@ export default function SettingsPanel() {
             );
           }
         } else {
-          // Finished：进度填满后关闭弹窗，再触发重启安装
+          // 下载完成：进度填满 → 关弹窗 → 重启安装
           setUpdateModal((m) =>
             m ? { ...m, downloading: true, progress: 100 } : m
           );
@@ -508,8 +503,8 @@ export default function SettingsPanel() {
         <div className="flex items-center gap-2">
           <input
             type="number"
-            min={1}
-            max={300}
+            min={10}
+            max={100}
             step={1}
             value={glm52AutoSwitchThresholdWan}
             onChange={(e) =>

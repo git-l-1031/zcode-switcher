@@ -20,6 +20,12 @@ refresh-desktop-icon-cache.bat
 *.zip
 *.local
 
+# Private feature implementation files
+/src/components/FloatingCapsule.tsx
+/src-tauri/src/zcode_cdp.rs
+/src-tauri/src/zcode_launcher.rs
+/scripts/cdp-*.mjs
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

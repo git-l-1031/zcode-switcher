@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import {
   MoreVertical,
   RefreshCw,
@@ -46,13 +46,7 @@ function daysLeft(endsAt: number): number {
   return Math.ceil(ms / 86400000);
 }
 
-/**
- * 把后端 quota 错误转成展示用 {文本, 颜色类}。三类：
- * - 超时 → 黄色 "刷新超时"（瞬时网络问题，重试即可）
- * - 从没成功拉到过额度（balances 为空，多见于刚添加、还没在 ZCode 登录过的新号）
- *   → 黄色 "请切换并登录 ZCode 后重试"
- * - 其它（之前有额度、现在出错 / 过期）→ 红色 "刷新失败：xxx"
- */
+/** quota 错误 → {文本, 颜色类}：超时/未登录黄，其它红 */
 function describeQuotaError(
   error: string,
   t: ReturnType<typeof getTexts>,
@@ -90,7 +84,7 @@ function planBadgeClass(status?: string | null): string {
   return "bg-accent/15 text-accent";
 }
 
-export default function AccountCard({
+function AccountCard({
   profile,
   index,
   busy,
@@ -123,7 +117,7 @@ export default function AccountCard({
     : t.noIdentity;
   const initialSource = identityText || profile.name;
 
-  // 到期槽位：endsAt → 占位 "—"。所有卡片都渲染同一行，缺数据时显示 "—"，保持高度一致。
+  // 到期槽位：缺数据用 "—" 占位，保持行高一致
   const endsAt = quota?.plan_ends_at ?? null;
   let dateText: string;
   let dateColor = "text-text-muted";
@@ -150,11 +144,11 @@ export default function AccountCard({
 
   const hasQuotaBars = !!quota?.balances?.length;
   const isListView = viewMode === "list";
-  // 列表视图仍按"有数据才画"逻辑（卡片视图已统一为永远画骨架/数据）
+  // 列表视图按"有数据才画"，卡片视图始终画骨架/数据
   const showQuota =
     !!quota && (!!quota.plan_name || hasQuotaBars);
 
-  // 错误展示：超时红 / 从没拉到额度黄(提示去登录) / 其它红。hasQuotaBars 作为"是否曾有额度"。
+  // hasQuotaBars 作为"是否曾有额度"，影响错误颜色分级
   const quotaErr = quota?.error
     ? describeQuotaError(quota.error, t, hasQuotaBars)
     : null;
@@ -168,7 +162,7 @@ export default function AccountCard({
             : "border-base-border bg-base-card hover:bg-base-cardhover"
         }`}
       >
-        {/* === 顶部行：头像（左上，小）+ 身份信息 === */}
+        {/* 顶部：头像 + 身份 */}
         <div className="flex items-start gap-2.5">
           {profile.avatar ? (
             <img
@@ -199,12 +193,12 @@ export default function AccountCard({
             <span className="mt-0.5 block truncate text-[11px] text-text-secondary">
               {sub}
             </span>
-            {/* 到期槽：始终渲染一行，缺数据显示 — */}
+            {/* 到期槽：始终渲染一行 */}
             <span className={`mt-0.5 flex items-center gap-1 truncate text-[10px] ${dateColor}`}>
               <CalendarClock size={10} className="shrink-0" />
               <span className="truncate">{dateText}</span>
             </span>
-            {/* 套餐徽章槽：始终占位（无套餐时透明保留高度） */}
+            {/* 套餐徽章槽：无套餐时透明占位 */}
             <span
               className={`mt-1 inline-flex max-w-full truncate rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
                 quota?.plan_name
@@ -218,7 +212,7 @@ export default function AccountCard({
           </div>
         </div>
 
-        {/* === 中部：额度区，始终渲染。有数据画两条，没数据画骨架灰条。 === */}
+        {/* 中部：额度区，缺数据画骨架 */}
         <div className="mt-3 flex min-h-0 flex-col gap-1.5 overflow-hidden border-t border-base-border/70 pt-2.5">
           {hasQuotaBars
             ? quota!.balances
@@ -239,7 +233,7 @@ export default function AccountCard({
               ))}
         </div>
 
-        {/* === 状态槽：始终保留一行。优先错误(红/黄)，其次刚刷新成功(绿)，否则透明占位 === */}
+        {/* 状态槽：错误 > 刷新成功 > 透明占位 */}
         <span
           className={`mt-1 block truncate text-[10px] ${
             quotaErr
@@ -253,7 +247,7 @@ export default function AccountCard({
           {quotaErr ? quotaErr.text : refreshOk ? t.quotaRefreshOk : "—"}
         </span>
 
-        {/* === 底部行：常用操作直接露出，避免多一层菜单 === */}
+        {/* 底部：常用操作 */}
         <div className="mt-auto flex items-center justify-between gap-1.5 pt-3">
           <button
             onClick={(e) => {
@@ -338,9 +332,9 @@ export default function AccountCard({
           : "gap-3 rounded-2xl px-4 py-4"
       }`}
     >
-      {/* === 顶部行：头像 + 身份 + 操作 === */}
+      {/* 顶部：头像 + 身份 + 操作 */}
       <div className={`flex items-center ${isListView ? "gap-3" : "gap-4"}`}>
-        {/* 头像：优先用存储的 data URI，否则渐变首字母 */}
+        {/* 头像：优先 data URI，否则渐变首字母 */}
         {profile.avatar ? (
           <img
             src={profile.avatar}
@@ -386,7 +380,7 @@ export default function AccountCard({
               </span>
             )}
           </div>
-          {/* 副标题：邮箱 + 到期/更新时间 */}
+          {/* 副标题 */}
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="truncate text-xs text-text-secondary">{sub}</span>
             {dateText && (
@@ -485,7 +479,7 @@ export default function AccountCard({
         </div>
       </div>
 
-      {/* === 底部：额度条 === */}
+      {/* 底部：额度条 */}
       {showQuota ? (
         <div
           className={`flex flex-col gap-1.5 border-t border-base-border/70 ${
@@ -521,3 +515,5 @@ export default function AccountCard({
     </div>
   );
 }
+
+export default memo(AccountCard);

@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
-  Plus,
+  Save,
   RefreshCw,
   FolderOpen,
   Download,
@@ -33,11 +33,13 @@ import {
   ImportChoiceModal,
 } from "./components/Modal";
 import SettingsPanel from "./components/SettingsPanel";
+import SortMenu from "./components/SortMenu";
 import FloatingCapsule, {
   FLOATING_BASE_H,
   FLOATING_BASE_W,
   FLOATING_RESIZER_EXTRA_H,
 } from "./components/FloatingCapsule";
+import { sortProfiles } from "./lib/sortProfiles";
 
 interface DialogState {
   kind:
@@ -67,6 +69,7 @@ export default function App() {
     loadingQuota,
     recentlyRefreshed,
     accountViewMode,
+    accountSortMode,
     hideAccountIdentity,
     language,
     quotaRefreshIntervalMinutes,
@@ -87,6 +90,7 @@ export default function App() {
     deleteProfile,
     deleteProfiles,
     setAccountViewMode,
+    setAccountSortMode,
     setHideAccountIdentity,
     setLanguage,
     setFloatingWindowMode,
@@ -105,6 +109,10 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [floatingResizerOpen, setFloatingResizerOpen] = useState(false);
   const activeProfile = profiles.find((p) => p.active);
+  const sortedProfiles = useMemo(
+    () => sortProfiles(profiles, quotas, accountSortMode),
+    [profiles, quotas, accountSortMode]
+  );
 
   useEffect(() => {
     setStartupIssue(navigator.onLine ? { kind: "none" } : { kind: "offline" });
@@ -148,6 +156,8 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [glm52AutoSwitchEnabled, activeProfile, refreshActiveQuotaForAutoSwitch]);
 
+  // 模式/主题变化（罕见）：重新配置窗口装饰、置顶、背景等。
+  // 不放 scale 在依赖里，避免拖滑块时反复 setDecorations/setShadow 引起窗口重绘抖动。
   useEffect(() => {
     const win = getCurrentWindow();
     const normalBg = theme === "dark" ? "#111317" : "#f6f7f9";
@@ -162,20 +172,29 @@ export default function App() {
       await win.setDecorations(!floatingWindowMode);
       await win.setShadow(!floatingWindowMode);
       await win.setBackgroundColor(floatingWindowMode ? "#00000000" : normalBg);
-      const floatW = Math.round(FLOATING_BASE_W * floatingWindowScale);
-      const floatH = Math.round(
-        (FLOATING_BASE_H + (floatingResizerOpen ? FLOATING_RESIZER_EXTRA_H : 0)) *
-          floatingWindowScale
-      );
-      await win.setSize(
-        floatingWindowMode ? new LogicalSize(floatW, floatH) : new LogicalSize(680, 720)
-      );
       if (!floatingWindowMode) {
+        await win.setSize(new LogicalSize(680, 720));
         await win.center();
       }
     };
     apply().catch(() => {});
-  }, [floatingWindowMode, floatingWindowScale, floatingResizerOpen, theme]);
+  }, [floatingWindowMode, theme]);
+
+  // 尺寸变化（拖滑块时高频触发）：用 rAF 合并连续变更，
+  // 同一帧内只发一次 setSize，避免多个 IPC 调用叠加导致窗口抖动。
+  // 注意：调节面板高度不参与 scale —— 它在缩放容器外，固定 RESIZER_EXTRA_H 像素。
+  useEffect(() => {
+    if (!floatingWindowMode) return;
+    const win = getCurrentWindow();
+    const floatW = Math.round(FLOATING_BASE_W * floatingWindowScale);
+    const floatH =
+      Math.round(FLOATING_BASE_H * floatingWindowScale) +
+      (floatingResizerOpen ? FLOATING_RESIZER_EXTRA_H : 0);
+    const raf = requestAnimationFrame(() => {
+      win.setSize(new LogicalSize(floatW, floatH)).catch(() => {});
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [floatingWindowMode, floatingWindowScale, floatingResizerOpen]);
 
   useEffect(() => {
     if (!floatingWindowMode) setFloatingResizerOpen(false);
@@ -471,6 +490,11 @@ export default function App() {
           {formatText(t.myAccounts, { count: profiles.length })}
         </span>
         <div className="flex shrink-0 items-center gap-2">
+          <SortMenu
+            value={accountSortMode}
+            onChange={setAccountSortMode}
+            language={language}
+          />
           <div className="flex h-9 overflow-hidden rounded-lg border border-base-border bg-base-card p-0.5">
             <button
               onClick={() => setAccountViewMode("card")}
@@ -516,20 +540,11 @@ export default function App() {
           <button
             onClick={handleCapture}
             disabled={busy}
-            className="focus-ring flex max-w-44 items-center gap-1.5 rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white shadow transition hover:bg-accent-hover active:scale-[0.98] disabled:opacity-50 disabled:active:scale-100"
+            title={t.saveCurrentAccount}
+            aria-label={t.saveCurrentAccount}
+            className="focus-ring flex h-9 w-9 items-center justify-center rounded-lg border border-base-border bg-white text-accent shadow-sm transition hover:bg-white/90 active:scale-[0.96] disabled:opacity-50 disabled:active:scale-100"
           >
-            <Plus size={16} className="shrink-0" />
-            <span
-              className={`truncate ${
-                t.saveCurrentAccount.length > 18
-                  ? "text-[10px]"
-                  : t.saveCurrentAccount.length > 12
-                  ? "text-[11px]"
-                  : ""
-              }`}
-            >
-              {t.saveCurrentAccount}
-            </span>
+            <Save size={16} />
           </button>
           <button
             onClick={handleImport}
@@ -597,7 +612,7 @@ export default function App() {
                 : "grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] auto-rows-fr gap-3 px-3"
             }
           >
-            {profiles.map((p, i) => (
+            {sortedProfiles.map((p, i) => (
               <AccountCard
                 key={p.id}
                 profile={p}
