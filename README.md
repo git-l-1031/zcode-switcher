@@ -68,7 +68,9 @@ ZCode.Switcher_x.x.x_x64-setup.exe
 
 ### 主界面
 
-<img src="docs/images/readme-main-window.png" alt="主界面" width="720" />
+<p align="center">
+  <img src="docs/images/readme-main-window.png" alt="主界面" width="620" />
+</p>
 
 ### 添加账号
 
