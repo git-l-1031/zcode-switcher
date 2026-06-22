@@ -89,7 +89,7 @@ ZCode.Switcher_x.x.x_x64-setup.exe
 ### 胶囊悬浮窗
 
 <p align="center">
-  <img src="docs/images/floating-window.png" alt="胶囊悬浮窗" width="360" />
+  <img src="docs/images/floating-window.png" alt="胶囊悬浮窗" width="320" />
 </p>
 
 ## 文档

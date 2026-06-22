@@ -89,7 +89,7 @@ No ZCode restart is required. Account config takes effect immediately after swit
 ### Capsule Floating Window
 
 <p align="center">
-  <img src="docs/images/floating-window.png" alt="Capsule Floating Window" width="360" />
+  <img src="docs/images/floating-window.png" alt="Capsule Floating Window" width="320" />
 </p>
 
 ## Documentation
