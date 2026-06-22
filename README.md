@@ -68,21 +68,21 @@ ZCode.Switcher_x.x.x_x64-setup.exe
 
 ### 主界面
 
-![主界面](docs/images/readme-main-window.png)
+<img src="docs/images/readme-main-window.png" alt="主界面" width="720" />
 
 ### 添加账号
 
-![添加账号](docs/images/readme-add-account.png)
+<img src="docs/images/readme-add-account.png" alt="添加账号" width="720" />
 
 ### 无感切换
 
 无需重启 ZCode，切号后配置即时生效。
 
-![无感切换](docs/images/readme-no-restart-switch.png)
+<img src="docs/images/readme-no-restart-switch.png" alt="无感切换" width="720" />
 
 ### 胶囊悬浮窗
 
-![胶囊悬浮窗](docs/images/readme-floating-window.png)
+<img src="docs/images/readme-floating-window.png" alt="胶囊悬浮窗" width="720" />
 
 ## 文档
 
