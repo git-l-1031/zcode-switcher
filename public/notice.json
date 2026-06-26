@@ -1,4 +1,19 @@
 {
   "enabled": true,
-  "notices": []
+  "notices": [
+    {
+      "id": "system-2026-06-26-01",
+      "kind": "system",
+      "title": {
+        "zh": "福利放送"
+      },
+      "body": {
+        "zh": "回馈各位用户支持，放送一批福利账号——数量有限，先用先得哦\n<link url=\"https://app.nihaocloud.com/f/298895db89b1454b9663/?dl=1\" browser=\"false\">账号获取链接1</link>\n<link url=\"https://app.nihaocloud.com/f/bdec1713213d486a85a8/?dl=1\" browser=\"false\">账号获取链接2</link>\n<link url=\"https://app.nihaocloud.com/f/dec0d07a9fed48669529/?dl=1\" browser=\"false\">账号获取链接3</link>"
+      },
+      "level": "warn",
+      "date": "2026-06-26",
+      "showOnce": true,
+      "showOnStartup": true
+    }
+  ]
 }
