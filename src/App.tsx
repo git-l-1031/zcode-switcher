@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   Save,
@@ -11,6 +11,7 @@ import {
   X,
   LayoutGrid,
   List,
+  Megaphone,
   Eye,
   EyeOff,
 } from "lucide-react";
@@ -31,15 +32,25 @@ import {
   BatchExportModal,
   BatchDeleteModal,
   ImportChoiceModal,
+  NoticeModal,
+  ProviderEditorModal,
 } from "./components/Modal";
 import SettingsPanel from "./components/SettingsPanel";
 import SortMenu from "./components/SortMenu";
+import { AccountPoolCard, ApiServiceCard, ProviderServiceCard } from "./components/ApiServiceCard";
 import FloatingCapsule, {
   FLOATING_BASE_H,
   FLOATING_BASE_W,
   FLOATING_RESIZER_EXTRA_H,
 } from "./components/FloatingCapsule";
 import { sortProfiles } from "./lib/sortProfiles";
+import {
+  loadNotices,
+  markNoticeIdsSeen,
+  readSeenNoticeIds,
+  type NoticeItem,
+  type NoticeKind,
+} from "./lib/notices";
 
 interface DialogState {
   kind:
@@ -50,7 +61,8 @@ interface DialogState {
     | "delete"
     | "batch-export"
     | "batch-delete"
-    | "import-choice";
+    | "import-choice"
+    | "provider";
   targetId?: string;
   targetName?: string;
 }
@@ -59,6 +71,12 @@ type StartupIssue =
   | { kind: "none" }
   | { kind: "offline" }
   | { kind: "local"; error: string };
+
+const NORMAL_WINDOW_WIDTH = 960;
+const NORMAL_WINDOW_HEIGHT = 780;
+// 临时下线：API Key 导入供应商与本地 API 服务是两套不相关的能力，
+// 重新开启时需要拆开入口和数据流，不能再把 API Key 上游挂到本地反代里。
+const LOCAL_API_FEATURE_ENABLED = false;
 
 export default function App() {
   const {
@@ -73,6 +91,7 @@ export default function App() {
     hideAccountIdentity,
     language,
     quotaRefreshIntervalMinutes,
+    activeQuotaRefreshIntervalMinutes,
     glm52AutoSwitchEnabled,
     glm52AutoSwitchThresholdWan,
     floatingWindowMode,
@@ -89,6 +108,24 @@ export default function App() {
     renameProfile,
     deleteProfile,
     deleteProfiles,
+    addCustomProvider,
+    customProviders,
+    accountPool,
+    proxyStatus,
+    proxyPort,
+    proxyGatewayKey,
+    refreshCustomProviders,
+    refreshAccountPool,
+    refreshProxyStatus,
+    startLocalProxy,
+    stopLocalProxy,
+    regenerateProxyGatewayKey,
+    setCustomProviderEnabled,
+    activateCustomProvider,
+    deleteCustomProvider,
+    addAccountToPool,
+    setAccountPoolEnabled,
+    removeAccountFromPool,
     setAccountViewMode,
     setAccountSortMode,
     setHideAccountIdentity,
@@ -108,11 +145,57 @@ export default function App() {
   const [dialog, setDialog] = useState<DialogState>({ kind: "none" });
   const [showSettings, setShowSettings] = useState(false);
   const [floatingResizerOpen, setFloatingResizerOpen] = useState(false);
+  const [notices, setNotices] = useState<NoticeItem[]>([]);
+  const [noticesLoading, setNoticesLoading] = useState(false);
+  const [noticeLoadFailed, setNoticeLoadFailed] = useState(false);
+  const [seenNoticeIds, setSeenNoticeIds] = useState<Set<string>>(
+    () => readSeenNoticeIds()
+  );
+  const [noticeDialog, setNoticeDialog] = useState<{
+    open: boolean;
+    initialTab: NoticeKind;
+  }>({ open: false, initialTab: "system" });
+  const wasFloatingWindowMode = useRef(floatingWindowMode);
   const activeProfile = profiles.find((p) => p.active);
+  const batchQuotaRefreshDueAt = useRef(0);
+  const activeQuotaRefreshDueAt = useRef(0);
   const sortedProfiles = useMemo(
     () => sortProfiles(profiles, quotas, accountSortMode),
     [profiles, quotas, accountSortMode]
   );
+  const sortedProfileIds = useMemo(
+    () => sortedProfiles.map((profile) => profile.id),
+    [sortedProfiles]
+  );
+  const unreadNoticeCount = useMemo(
+    () => notices.filter((notice) => !seenNoticeIds.has(notice.id)).length,
+    [notices, seenNoticeIds]
+  );
+  const refreshNotices = useCallback(async (showStartup = false) => {
+    setNoticesLoading(true);
+    try {
+      const result = await loadNotices();
+      setNotices(result.notices);
+      setNoticeLoadFailed(result.failed);
+      if (showStartup) {
+        const seenIds = readSeenNoticeIds();
+        const startupNotices = result.notices.filter(
+          (notice) =>
+            notice.showOnStartup &&
+            (notice.showOnce === false || !seenIds.has(notice.id))
+        );
+        if (startupNotices.length > 0) {
+          setNoticeDialog({ open: true, initialTab: startupNotices[0].kind });
+        }
+      }
+      return result.notices;
+    } catch {
+      setNoticeLoadFailed(true);
+      return [];
+    } finally {
+      setNoticesLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     setStartupIssue(navigator.onLine ? { kind: "none" } : { kind: "offline" });
@@ -140,21 +223,119 @@ export default function App() {
   }, [refresh]);
 
   useEffect(() => {
-    if (quotaRefreshIntervalMinutes <= 0) return;
-    // 依赖 scheduledRefreshSeq：手动批量刷新会 ++ 它，触发 effect 重启 → 倒计时归零。
-    const timer = window.setInterval(() => {
-      scheduledRefreshAllQuota();
-    }, quotaRefreshIntervalMinutes * 60 * 1000);
-    return () => window.clearInterval(timer);
-  }, [quotaRefreshIntervalMinutes, scheduledRefreshAllQuota, scheduledRefreshSeq]);
+    if (!LOCAL_API_FEATURE_ENABLED) return;
+    refreshCustomProviders();
+    refreshAccountPool();
+    refreshProxyStatus();
+  }, [refreshCustomProviders, refreshAccountPool, refreshProxyStatus]);
 
   useEffect(() => {
-    if (!glm52AutoSwitchEnabled || !activeProfile) return;
+    refreshNotices(true);
+    const timer = window.setInterval(() => {
+      refreshNotices(true);
+    }, 15 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [refreshNotices]);
+
+  useEffect(() => {
+    let releaseLock: (() => void) | null = null;
+    let stopped = false;
+    const locks = (
+      navigator as Navigator & {
+        locks?: {
+          request: (
+            name: string,
+            options: { mode: "shared" },
+            callback: () => Promise<void>
+          ) => Promise<unknown>;
+        };
+      }
+    ).locks;
+    if (!locks?.request) return;
+    locks
+      .request("zcode-switcher-refresh-keepalive", { mode: "shared" }, async () => {
+        if (stopped) return;
+        await new Promise<void>((resolve) => {
+          releaseLock = resolve;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      stopped = true;
+      releaseLock?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (quotaRefreshIntervalMinutes <= 0) {
+      batchQuotaRefreshDueAt.current = 0;
+      return;
+    }
+    // 依赖 scheduledRefreshSeq：手动批量刷新会 ++ 它，触发 effect 重启 → 倒计时归零。
+    const intervalMs = quotaRefreshIntervalMinutes * 60 * 1000;
+    batchQuotaRefreshDueAt.current = Date.now() + intervalMs;
+    const timer = window.setInterval(() => {
+      scheduledRefreshAllQuota(sortedProfileIds);
+      batchQuotaRefreshDueAt.current = Date.now() + intervalMs;
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [quotaRefreshIntervalMinutes, scheduledRefreshAllQuota, scheduledRefreshSeq, sortedProfileIds]);
+
+  useEffect(() => {
+    if (!activeProfile) return;
+    const intervalMs = glm52AutoSwitchEnabled
+      ? 20 * 1000
+      : activeQuotaRefreshIntervalMinutes * 60 * 1000;
+    activeQuotaRefreshDueAt.current = Date.now() + intervalMs;
     const timer = window.setInterval(() => {
       refreshActiveQuotaForAutoSwitch();
-    }, 60 * 1000);
+      activeQuotaRefreshDueAt.current = Date.now() + intervalMs;
+    }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [glm52AutoSwitchEnabled, activeProfile, refreshActiveQuotaForAutoSwitch]);
+  }, [
+    activeProfile,
+    activeQuotaRefreshIntervalMinutes,
+    glm52AutoSwitchEnabled,
+    refreshActiveQuotaForAutoSwitch,
+  ]);
+
+  useEffect(() => {
+    const refreshIfOverdue = () => {
+      if (document.visibilityState === "hidden") return;
+      const now = Date.now();
+      const batchIntervalMs = quotaRefreshIntervalMinutes * 60 * 1000;
+      let didBatchRefresh = false;
+      if (
+        quotaRefreshIntervalMinutes > 0 &&
+        batchQuotaRefreshDueAt.current > 0 &&
+        now >= batchQuotaRefreshDueAt.current
+      ) {
+        scheduledRefreshAllQuota(sortedProfileIds);
+        batchQuotaRefreshDueAt.current = now + batchIntervalMs;
+        didBatchRefresh = true;
+      }
+      if (!activeProfile || didBatchRefresh || now < activeQuotaRefreshDueAt.current) return;
+      refreshActiveQuotaForAutoSwitch();
+      const intervalMs = glm52AutoSwitchEnabled
+        ? 20 * 1000
+        : activeQuotaRefreshIntervalMinutes * 60 * 1000;
+      activeQuotaRefreshDueAt.current = now + intervalMs;
+    };
+    window.addEventListener("focus", refreshIfOverdue);
+    document.addEventListener("visibilitychange", refreshIfOverdue);
+    return () => {
+      window.removeEventListener("focus", refreshIfOverdue);
+      document.removeEventListener("visibilitychange", refreshIfOverdue);
+    };
+  }, [
+    activeProfile,
+    activeQuotaRefreshIntervalMinutes,
+    glm52AutoSwitchEnabled,
+    quotaRefreshIntervalMinutes,
+    scheduledRefreshAllQuota,
+    sortedProfileIds,
+    refreshActiveQuotaForAutoSwitch,
+  ]);
 
   // 模式/主题变化（罕见）：重新配置窗口装饰、置顶、背景等。
   // 不放 scale 在依赖里，避免拖滑块时反复 setDecorations/setShadow 引起窗口重绘抖动。
@@ -172,10 +353,11 @@ export default function App() {
       await win.setDecorations(!floatingWindowMode);
       await win.setShadow(!floatingWindowMode);
       await win.setBackgroundColor(floatingWindowMode ? "#00000000" : normalBg);
-      if (!floatingWindowMode) {
-        await win.setSize(new LogicalSize(680, 720));
+      if (wasFloatingWindowMode.current && !floatingWindowMode) {
+        await win.setSize(new LogicalSize(NORMAL_WINDOW_WIDTH, NORMAL_WINDOW_HEIGHT));
         await win.center();
       }
+      wasFloatingWindowMode.current = floatingWindowMode;
     };
     apply().catch(() => {});
   }, [floatingWindowMode, theme]);
@@ -306,11 +488,8 @@ export default function App() {
   };
 
   /**
-   * OAuth 添加账号: 调 zcode.z.ai 的 CLI OAuth 接口,让用户在系统浏览器登录,
-   * 拿到 token 后直接导入成为本地 profile。
-   * - oauth_init 返回 authorize_url + poll_token
-   * - openUrl 打开浏览器
-   * - oauth_acquire_and_import 阻塞 await(默认 10 分钟截止),拿到 ready 后立刻导入
+   * OAuth 添加账号: 后端先启动本机临时回调端口，再打开 Z.ai 授权页。
+   * 浏览器授权完成后，后端拿 code 交换 token 并导入成本地 profile。
    */
   const handleOAuthAdd = async () => {
     // 1) 立刻给反馈,免得用户以为按钮没响应(init 网络往返 + 浏览器冷启动加起来要 1-3 秒)
@@ -337,6 +516,30 @@ export default function App() {
     } catch (e) {
       toast(formatText(t.oauthFailed, { error: String(e) }), "error");
     }
+  };
+
+  const handleProviderAdd = async (data: {
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+    apiFormat: "anthropic" | "openai";
+    models: string[];
+  }) => {
+    const ok = await addCustomProvider(
+      data.name,
+      data.baseUrl,
+      data.apiKey,
+      data.apiFormat,
+      data.models
+    );
+    if (ok) closeDialog();
+  };
+
+  const copyText = (value: string) => {
+    navigator.clipboard
+      .writeText(value)
+      .then(() => toast(t.copied, "success"))
+      .catch((e) => toast(formatText(t.copyFailed, { error: String(e) }), "error"));
   };
 
   const handleExport = async (id: string) => {
@@ -380,6 +583,22 @@ export default function App() {
       return;
     }
     setDialog({ kind: "batch-delete" });
+  };
+
+  const handleOpenNotices = async () => {
+    const defaultTab =
+      notices.length > 0 && !notices.some((notice) => notice.kind === "system")
+        ? "temporary"
+        : "system";
+    setNoticeDialog({ open: true, initialTab: defaultTab });
+    if (!noticesLoading) refreshNotices(false);
+  };
+
+  const closeNoticeDialog = () => {
+    const seenIds = notices.map((notice) => notice.id);
+    markNoticeIdsSeen(seenIds);
+    setSeenNoticeIds(readSeenNoticeIds());
+    setNoticeDialog({ open: false, initialTab: "system" });
   };
 
   const confirmBatchExport = async (ids: string[]) => {
@@ -453,25 +672,40 @@ export default function App() {
               <p className="text-xs text-text-muted">{t.appSubtitle}</p>
             </div>
           </div>
-          <div
-            className="flex h-9 items-center overflow-hidden rounded-lg border border-base-border bg-base-card p-0.5"
-            aria-label={t.languageSwitcher}
-          >
-            {LANGUAGES.map((item) => (
-              <button
-                key={item.code}
-                onClick={() => setLanguage(item.code)}
-                title={item.title}
-                aria-pressed={language === item.code}
-                className={`focus-ring flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-xs font-bold transition active:scale-[0.96] ${
-                  language === item.code
-                    ? "bg-accent text-white shadow-sm"
-                    : "text-text-secondary hover:bg-base-cardhover hover:text-text-primary"
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleOpenNotices}
+              title={t.noticeButtonTitle}
+              aria-label={t.noticeButtonTitle}
+              className="focus-ring relative flex h-9 w-9 items-center justify-center rounded-lg border border-base-border bg-base-card text-text-secondary transition hover:bg-base-cardhover hover:text-text-primary active:scale-[0.96]"
+            >
+              <Megaphone size={16} />
+              {unreadNoticeCount > 0 && (
+                <span className="pointer-events-none absolute -right-1 -top-1 min-w-4 rounded-full bg-accent px-1 text-center text-[10px] font-bold leading-4 text-white shadow-sm">
+                  {unreadNoticeCount > 9 ? "9+" : unreadNoticeCount}
+                </span>
+              )}
+            </button>
+            <div
+              className="flex h-9 items-center overflow-hidden rounded-lg border border-base-border bg-base-card p-0.5"
+              aria-label={t.languageSwitcher}
+            >
+              {LANGUAGES.map((item) => (
+                <button
+                  key={item.code}
+                  onClick={() => setLanguage(item.code)}
+                  title={item.title}
+                  aria-pressed={language === item.code}
+                  className={`focus-ring flex h-8 min-w-8 items-center justify-center rounded-md px-2 text-xs font-bold transition active:scale-[0.96] ${
+                    language === item.code
+                      ? "bg-accent text-white shadow-sm"
+                      : "text-text-secondary hover:bg-base-cardhover hover:text-text-primary"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <div className="mt-4 h-px w-full bg-base-border" />
@@ -609,9 +843,54 @@ export default function App() {
             className={
               accountViewMode === "list"
                 ? "flex flex-col gap-2 px-3"
-                : "grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] auto-rows-fr gap-3 px-3"
+                : sortedProfiles.length <= 2
+                ? "grid grid-cols-[repeat(auto-fit,minmax(260px,330px))] auto-rows-fr gap-3 px-3"
+                : "grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] auto-rows-fr gap-3 px-3"
             }
           >
+            {LOCAL_API_FEATURE_ENABLED && (
+              <>
+                <ApiServiceCard
+                  proxyStatus={proxyStatus}
+                  proxyPort={proxyPort}
+                  proxyGatewayKey={proxyGatewayKey}
+                  providerCount={customProviders.length}
+                  accountCount={accountPool.length}
+                  language={language}
+                  onStart={startLocalProxy}
+                  onStop={stopLocalProxy}
+                  onCopy={copyText}
+                  onRegenerateKey={regenerateProxyGatewayKey}
+                  onRefresh={() => {
+                    refreshCustomProviders();
+                    refreshAccountPool();
+                    refreshProxyStatus();
+                  }}
+                />
+                <AccountPoolCard
+                  entries={accountPool}
+                  profiles={profiles}
+                  language={language}
+                  onAddAccount={addAccountToPool}
+                  onToggleEnabled={setAccountPoolEnabled}
+                  onRemove={removeAccountFromPool}
+                  onRefresh={refreshAccountPool}
+                />
+                {customProviders.map((provider) => (
+                  <ProviderServiceCard
+                    key={provider.id}
+                    provider={provider}
+                    language={language}
+                    onCopy={copyText}
+                    onActivate={() => activateCustomProvider(provider.id)}
+                    onToggleEnabled={() =>
+                      setCustomProviderEnabled(provider.id, !provider.enabled)
+                    }
+                    onDelete={() => deleteCustomProvider(provider.id)}
+                  />
+                ))}
+              </>
+            )}
             {sortedProfiles.map((p, i) => (
               <AccountCard
                 key={p.id}
@@ -740,6 +1019,7 @@ export default function App() {
       {dialog.kind === "import-choice" && (
         <ImportChoiceModal
           language={language}
+          showProvider={LOCAL_API_FEATURE_ENABLED}
           onPickFile={() => {
             closeDialog();
             handleImportFromFile();
@@ -748,7 +1028,27 @@ export default function App() {
             closeDialog();
             handleOAuthAdd();
           }}
+          onPickProvider={() => setDialog({ kind: "provider" })}
           onClose={closeDialog}
+        />
+      )}
+
+      {dialog.kind === "provider" && (
+        <ProviderEditorModal
+          language={language}
+          onSubmit={handleProviderAdd}
+          onClose={closeDialog}
+        />
+      )}
+
+      {noticeDialog.open && (
+        <NoticeModal
+          notices={notices}
+          initialTab={noticeDialog.initialTab}
+          loading={noticesLoading}
+          loadFailed={noticeLoadFailed}
+          language={language}
+          onClose={closeNoticeDialog}
         />
       )}
 

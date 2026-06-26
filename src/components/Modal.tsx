@@ -1,7 +1,10 @@
 import { useState, useEffect } from "react";
-import { Check, Trash2, FileDown, KeyRound } from "lucide-react";
-import type { ProfileView, QuotaInfo } from "../lib/api";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { open } from "@tauri-apps/plugin-dialog";
+import { AlertTriangle, Check, FileDown, Info, KeyRound, Megaphone, Server, Trash2, X } from "lucide-react";
+import { api, type ApiFormat, type ProfileView, type QuotaInfo } from "../lib/api";
 import { formatText, getTexts, type Language } from "../i18n";
+import { resolveNoticeText, type NoticeItem, type NoticeKind, type NoticeLevel } from "../lib/notices";
 
 /** 文本输入对话框（用于保存账号 / 重命名）。 */
 export function NameModal({
@@ -546,6 +549,530 @@ export function UpdateModal({
   );
 }
 
+export function NoticeModal({
+  notices,
+  initialTab,
+  loading,
+  loadFailed,
+  language,
+  onClose,
+}: {
+  notices: NoticeItem[];
+  initialTab: NoticeKind;
+  loading: boolean;
+  loadFailed: boolean;
+  language: Language;
+  onClose: () => void;
+}) {
+  const t = getTexts(language);
+  const [tab, setTab] = useState<NoticeKind>(initialTab);
+  const systemCount = notices.filter((notice) => notice.kind === "system").length;
+  const temporaryCount = notices.filter((notice) => notice.kind === "temporary").length;
+  const visibleNotices = notices.filter((notice) => notice.kind === tab);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  return (
+    <Backdrop onClose={onClose}>
+      <div
+        className="modal-in flex max-h-[82vh] w-[500px] flex-col rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-soft text-accent">
+                <Megaphone size={17} />
+              </span>
+              <h2 className="text-lg font-bold text-text-primary">{t.noticeTitle}</h2>
+            </div>
+            <p className="mt-1 text-xs text-text-secondary">{t.noticeSubtitle}</p>
+          </div>
+          <button
+            onClick={onClose}
+            title={t.cancel}
+            className="focus-ring flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-secondary transition hover:bg-base-cardhover hover:text-text-primary active:scale-[0.92]"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-1 rounded-lg border border-base-border bg-base-card p-1">
+          <NoticeTabButton
+            active={tab === "system"}
+            label={t.noticeSystemTab}
+            count={systemCount}
+            onClick={() => setTab("system")}
+          />
+          <NoticeTabButton
+            active={tab === "temporary"}
+            label={t.noticeTemporaryTab}
+            count={temporaryCount}
+            onClick={() => setTab("temporary")}
+          />
+        </div>
+
+        <div className="mt-4 min-h-[180px] flex-1 overflow-y-auto pr-1">
+          {loading ? (
+            <NoticeState icon={<Info size={18} />} title={t.noticeLoading} />
+          ) : loadFailed && notices.length === 0 ? (
+            <NoticeState icon={<AlertTriangle size={18} />} title={t.noticeLoadFailed} />
+          ) : visibleNotices.length === 0 ? (
+            <NoticeState icon={<Info size={18} />} title={t.noticeEmpty} />
+          ) : (
+            <div className="flex flex-col gap-2">
+              {visibleNotices.map((notice) => (
+                <div
+                  key={notice.id}
+                  className="rounded-xl border border-base-border bg-base-card p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold text-text-primary">
+                        {resolveNoticeText(notice.title, language)}
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
+                        <NoticeLevelBadge level={notice.level} language={language} />
+                        {notice.date && <span>{notice.date}</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <NoticeBody
+                    text={resolveNoticeText(notice.body, language)}
+                    defaultLinkText={t.noticeOpenLink}
+                    defaultDownloadText={t.noticeGetLink}
+                    downloadSavedText={t.noticeDownloadSaved}
+                    downloadFailedText={t.noticeDownloadFailed}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={onClose}
+            className="focus-ring rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white transition hover:bg-accent-hover active:scale-[0.97]"
+          >
+            {t.noticeRead}
+          </button>
+        </div>
+      </div>
+    </Backdrop>
+  );
+}
+
+function NoticeBody({
+  text,
+  defaultLinkText,
+  defaultDownloadText,
+  downloadSavedText,
+  downloadFailedText,
+}: {
+  text: string;
+  defaultLinkText: string;
+  defaultDownloadText: string;
+  downloadSavedText: string;
+  downloadFailedText: string;
+}) {
+  const [downloadingUrl, setDownloadingUrl] = useState<string | null>(null);
+  const [pendingDownload, setPendingDownload] = useState<PendingDownload | null>(null);
+  const [downloadResult, setDownloadResult] = useState<DownloadResult | null>(null);
+  const handleLinkClick = async (part: Extract<NoticeInlinePart, { kind: "link" }>) => {
+    if (part.openInBrowser) {
+      openUrl(part.url).catch(() => {});
+      return;
+    }
+    setDownloadingUrl(part.url);
+    try {
+      const info = await api.inspectDownloadUrl(part.url);
+      setPendingDownload({ url: part.url, ...info });
+    } catch (e) {
+      setPendingDownload({
+        url: part.url,
+        filename: "未知文件",
+        contentType: null,
+        contentLength: null,
+        warning: `无法预读下载信息：${String(e)}`,
+      });
+    }
+  };
+
+  const cancelPendingDownload = () => {
+    setPendingDownload(null);
+    setDownloadingUrl(null);
+  };
+
+  const confirmPendingDownload = async () => {
+    if (!pendingDownload) return;
+    const download = pendingDownload;
+    setPendingDownload(null);
+    const directory = await open({
+      directory: true,
+      multiple: false,
+      title: "选择下载目录",
+    });
+    if (!directory || Array.isArray(directory)) {
+      setDownloadingUrl(null);
+      return;
+    }
+    try {
+      const result = await api.downloadUrlToDirectory(download.url, directory);
+      setDownloadResult({
+        kind: "success",
+        title: downloadSavedText,
+        message: `文件名：${result.filename}`,
+        detail: `保存位置：${result.path}`,
+      });
+    } catch (e) {
+      setDownloadResult({
+        kind: "error",
+        title: "下载失败",
+        message: formatText(downloadFailedText, { error: String(e) }),
+      });
+    } finally {
+      setDownloadingUrl(null);
+    }
+  };
+
+  return (
+    <>
+      <div className="mt-3 whitespace-pre-line text-sm leading-relaxed text-text-secondary">
+        {parseNoticeInline(text, defaultLinkText, defaultDownloadText).map((part, index) => {
+          if (part.kind === "red") {
+            return (
+              <span key={index} className="font-medium text-danger">
+                {part.text}
+              </span>
+            );
+          }
+          if (part.kind === "link") {
+            return (
+              <button
+                key={index}
+                type="button"
+                disabled={downloadingUrl === part.url}
+                onClick={() => handleLinkClick(part)}
+                className="focus-ring inline rounded px-0.5 font-medium text-accent underline decoration-accent/40 underline-offset-2 hover:text-accent-hover disabled:opacity-60"
+              >
+                {part.text}
+              </button>
+            );
+          }
+          return <span key={index}>{part.text}</span>;
+        })}
+      </div>
+      {pendingDownload && (
+        <NoticeDownloadConfirmModal
+          download={pendingDownload}
+          onCancel={cancelPendingDownload}
+          onConfirm={confirmPendingDownload}
+        />
+      )}
+      {downloadResult && (
+        <NoticeDownloadResultModal
+          result={downloadResult}
+          onClose={() => setDownloadResult(null)}
+        />
+      )}
+    </>
+  );
+}
+
+type PendingDownload = {
+  url: string;
+  filename: string;
+  contentType: string | null;
+  contentLength: number | null;
+  warning?: string;
+};
+
+type DownloadResult = {
+  kind: "success" | "error";
+  title: string;
+  message: string;
+  detail?: string;
+};
+
+function NoticeDownloadConfirmModal({
+  download,
+  onCancel,
+  onConfirm,
+}: {
+  download: PendingDownload;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+      onClick={(e) => {
+        e.stopPropagation();
+        onCancel();
+      }}
+    >
+      <div
+        className="modal-in w-[420px] rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex items-center gap-2">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-soft text-accent">
+              <FileDown size={17} />
+            </span>
+            <h3 className="text-lg font-bold text-text-primary">确认下载</h3>
+          </div>
+          <button
+            onClick={onCancel}
+            className="focus-ring flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-secondary transition hover:bg-base-cardhover hover:text-text-primary active:scale-[0.92]"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-base-border bg-base-card p-4 text-sm">
+          <DownloadInfoRow label="文件名" value={download.filename} />
+          <DownloadInfoRow label="类型" value={download.contentType || "未知"} />
+          <DownloadInfoRow label="大小" value={formatDownloadSize(download.contentLength)} />
+        </div>
+
+        {download.warning && (
+          <div className="mt-3 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn">
+            {download.warning}
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            className="focus-ring rounded-lg border border-base-border bg-base-card px-4 py-2 text-sm text-text-secondary transition hover:bg-base-cardhover active:scale-[0.97]"
+          >
+            取消
+          </button>
+          <button
+            onClick={onConfirm}
+            className="focus-ring rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white transition hover:bg-accent-hover active:scale-[0.97]"
+          >
+            选择目录
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NoticeDownloadResultModal({
+  result,
+  onClose,
+}: {
+  result: DownloadResult;
+  onClose: () => void;
+}) {
+  const isSuccess = result.kind === "success";
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClose();
+      }}
+    >
+      <div
+        className="modal-in w-[420px] rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
+          <span
+            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+              isSuccess ? "bg-ok/15 text-ok" : "bg-danger/10 text-danger"
+            }`}
+          >
+            {isSuccess ? <Check size={17} /> : <AlertTriangle size={17} />}
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-lg font-bold text-text-primary">{result.title}</h3>
+            <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-text-secondary">
+              {result.message}
+            </p>
+            {result.detail && (
+              <p className="mt-2 break-all rounded-lg bg-base-card px-3 py-2 text-xs leading-relaxed text-text-muted">
+                {result.detail}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end">
+          <button
+            onClick={onClose}
+            className="focus-ring rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white transition hover:bg-accent-hover active:scale-[0.97]"
+          >
+            知道了
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DownloadInfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-3 py-1">
+      <div className="text-xs font-bold text-text-muted">{label}</div>
+      <div className="break-all text-sm font-medium text-text-primary">{value}</div>
+    </div>
+  );
+}
+
+function formatDownloadSize(value: number | null): string {
+  if (!value || value <= 0) return "未知";
+  const units = ["B", "KB", "MB", "GB"] as const;
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+type NoticeInlinePart =
+  | { kind: "text"; text: string }
+  | { kind: "red"; text: string }
+  | { kind: "link"; text: string; url: string; openInBrowser: boolean };
+
+function parseNoticeInline(
+  text: string,
+  defaultLinkText: string,
+  defaultDownloadText: string
+): NoticeInlinePart[] {
+  const parts: NoticeInlinePart[] = [];
+  const tokenRe =
+    /<red>(.*?)<\/red>|<link\b([^>]*)\/>|<link\b([^>]*)>(.*?)<\/link>|(https?:\/\/[^\s<]+)/gis;
+  let lastIndex = 0;
+  for (const match of text.matchAll(tokenRe)) {
+    if (match.index > lastIndex) {
+      parts.push({ kind: "text", text: text.slice(lastIndex, match.index) });
+    }
+    if (match[1] !== undefined) {
+      parts.push({ kind: "red", text: match[1] });
+    } else if (match[2] !== undefined) {
+      const link = parseNoticeLink(match[2], "", defaultLinkText, defaultDownloadText);
+      if (link) parts.push(link);
+    } else if (match[3] !== undefined) {
+      const link = parseNoticeLink(match[3], match[4], defaultLinkText, defaultDownloadText);
+      if (link) parts.push(link);
+    } else if (match[5] !== undefined) {
+      parts.push({
+        kind: "link",
+        url: match[5],
+        text: match[5],
+        openInBrowser: true,
+      });
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    parts.push({ kind: "text", text: text.slice(lastIndex) });
+  }
+  return parts;
+}
+
+function parseNoticeLink(
+  attrs: string,
+  label: string,
+  defaultLinkText: string,
+  defaultDownloadText: string
+): Extract<NoticeInlinePart, { kind: "link" }> | null {
+  const url = readNoticeAttr(attrs, "url");
+  if (!url || !/^https?:\/\//i.test(url)) return null;
+  const openInBrowser = readNoticeAttr(attrs, "browser") !== "false";
+  const text = label || (openInBrowser ? defaultLinkText : defaultDownloadText);
+  return { kind: "link", url, text, openInBrowser };
+}
+
+function readNoticeAttr(attrs: string, name: string): string | null {
+  const re = new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`, "i");
+  return re.exec(attrs)?.[1] ?? null;
+}
+
+function NoticeTabButton({
+  active,
+  label,
+  count,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-pressed={active}
+      className={`focus-ring flex h-8 items-center justify-center gap-1.5 rounded-md text-xs font-bold transition active:scale-[0.97] ${
+        active
+          ? "bg-accent text-white shadow-sm"
+          : "text-text-secondary hover:bg-base-cardhover hover:text-text-primary"
+      }`}
+    >
+      <span>{label}</span>
+      <span
+        className={`rounded-full px-1.5 py-0.5 text-[10px] leading-none ${
+          active ? "bg-white/20 text-white" : "bg-base-cardhover text-text-muted"
+        }`}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+function NoticeState({ icon, title }: { icon: React.ReactNode; title: string }) {
+  return (
+    <div className="flex h-[180px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-base-border bg-base-card/60 text-center">
+      <div className="text-text-muted">{icon}</div>
+      <div className="text-sm font-medium text-text-secondary">{title}</div>
+    </div>
+  );
+}
+
+function NoticeLevelBadge({
+  level,
+  language,
+}: {
+  level: NoticeLevel;
+  language: Language;
+}) {
+  const t = getTexts(language);
+  const label =
+    level === "error"
+      ? t.noticeLevelError
+      : level === "warn"
+        ? t.noticeLevelWarn
+        : t.noticeLevelInfo;
+  const className =
+    level === "error"
+      ? "bg-danger/10 text-danger"
+      : level === "warn"
+        ? "bg-warn/10 text-warn"
+        : "bg-accent-soft text-accent";
+
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${className}`}>
+      {label}
+    </span>
+  );
+}
+
 function Backdrop({
   children,
   onClose,
@@ -569,13 +1096,17 @@ function Backdrop({
  */
 export function ImportChoiceModal({
   language,
+  showProvider = true,
   onPickFile,
   onPickOAuth,
+  onPickProvider,
   onClose,
 }: {
   language: Language;
+  showProvider?: boolean;
   onPickFile: () => void;
   onPickOAuth: () => void;
+  onPickProvider: () => void;
   onClose: () => void;
 }) {
   const t = getTexts(language);
@@ -596,7 +1127,7 @@ export function ImportChoiceModal({
         <h2 className="text-lg font-bold text-text-primary">{t.importChoiceTitle}</h2>
         <p className="mt-1 text-xs text-text-secondary">{t.importChoiceSubtitle}</p>
 
-        <div className="mt-5 grid grid-cols-2 gap-3">
+        <div className={`mt-5 grid gap-3 ${showProvider ? "grid-cols-3" : "grid-cols-2"}`}>
           <button
             onClick={onPickFile}
             className="focus-ring group flex flex-col items-start gap-2 rounded-xl border-2 border-base-border bg-base-card p-4 text-left transition hover:border-accent hover:bg-accent-soft active:scale-[0.98]"
@@ -622,6 +1153,21 @@ export function ImportChoiceModal({
               {t.importChoiceOAuthDesc}
             </div>
           </button>
+
+          {showProvider && (
+            <button
+              onClick={onPickProvider}
+              className="focus-ring group flex flex-col items-start gap-2 rounded-xl border-2 border-base-border bg-base-card p-4 text-left transition hover:border-accent hover:bg-accent-soft active:scale-[0.98]"
+            >
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-base-cardhover text-text-secondary transition group-hover:bg-accent group-hover:text-white">
+                <Server size={18} />
+              </div>
+              <div className="text-sm font-bold text-text-primary">{t.importChoiceProvider}</div>
+              <div className="text-xs leading-relaxed text-text-muted">
+                {t.importChoiceProviderDesc}
+              </div>
+            </button>
+          )}
         </div>
 
         <div className="mt-5 flex justify-end">
@@ -630,6 +1176,161 @@ export function ImportChoiceModal({
             className="focus-ring rounded-lg border border-base-border bg-base-card px-4 py-2 text-sm text-text-secondary transition hover:bg-base-cardhover active:scale-[0.97]"
           >
             {t.cancel}
+          </button>
+        </div>
+      </div>
+    </Backdrop>
+  );
+}
+
+export function ProviderEditorModal({
+  language,
+  onSubmit,
+  onClose,
+}: {
+  language: Language;
+  onSubmit: (data: {
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+    apiFormat: ApiFormat;
+    models: string[];
+  }) => void;
+  onClose: () => void;
+}) {
+  const t = getTexts(language);
+  const [name, setName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [apiFormat, setApiFormat] = useState<ApiFormat>("anthropic");
+  const [modelsText, setModelsText] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const submit = () => {
+    const models = modelsText
+      .split(/[\n,]/)
+      .map((model) => model.trim())
+      .filter(Boolean);
+    if (!name.trim() || !baseUrl.trim() || !apiKey.trim() || models.length === 0) {
+      setError(t.providerRequired);
+      return;
+    }
+    if (!/^https?:\/\//i.test(baseUrl.trim())) {
+      setError(t.providerUrlInvalid);
+      return;
+    }
+    setError("");
+    onSubmit({
+      name: name.trim(),
+      baseUrl: baseUrl.trim(),
+      apiKey: apiKey.trim(),
+      apiFormat,
+      models,
+    });
+  };
+
+  return (
+    <Backdrop onClose={onClose}>
+      <div
+        className="modal-in w-[540px] rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-lg font-bold text-text-primary">{t.providerAddTitle}</h2>
+        <p className="mt-1 text-xs leading-relaxed text-text-secondary">
+          {t.providerAddDesc}
+        </p>
+
+        <div className="mt-5 grid gap-3">
+          <label className="grid gap-1.5">
+            <span className="text-xs font-bold text-text-secondary">{t.providerName}</span>
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.currentTarget.value)}
+              className="focus-ring h-10 rounded-lg border border-base-border bg-base-card px-3 text-sm text-text-primary outline-none transition focus:border-accent"
+            />
+          </label>
+
+          <label className="grid gap-1.5">
+            <span className="text-xs font-bold text-text-secondary">{t.providerBaseUrl}</span>
+            <input
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.currentTarget.value)}
+              placeholder="https://example.com/v1"
+              className="focus-ring h-10 rounded-lg border border-base-border bg-base-card px-3 text-sm text-text-primary outline-none transition focus:border-accent"
+            />
+          </label>
+
+          <label className="grid gap-1.5">
+            <span className="text-xs font-bold text-text-secondary">{t.providerApiKey}</span>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.currentTarget.value)}
+              className="focus-ring h-10 rounded-lg border border-base-border bg-base-card px-3 text-sm text-text-primary outline-none transition focus:border-accent"
+            />
+          </label>
+
+          <div className="grid gap-1.5">
+            <span className="text-xs font-bold text-text-secondary">{t.providerApiFormat}</span>
+            <div className="grid grid-cols-2 gap-1 rounded-lg border border-base-border bg-base-card p-1">
+              {([
+                ["anthropic", t.providerAnthropic],
+                ["openai", t.providerOpenAI],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setApiFormat(value)}
+                  aria-pressed={apiFormat === value}
+                  className={`focus-ring h-8 rounded-md text-xs font-bold transition active:scale-[0.97] ${
+                    apiFormat === value
+                      ? "bg-accent text-white"
+                      : "text-text-secondary hover:bg-base-cardhover hover:text-text-primary"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="grid gap-1.5">
+            <span className="text-xs font-bold text-text-secondary">{t.providerModels}</span>
+            <textarea
+              value={modelsText}
+              onChange={(e) => setModelsText(e.currentTarget.value)}
+              placeholder={t.providerModelsHint}
+              className="focus-ring min-h-20 resize-none rounded-lg border border-base-border bg-base-card px-3 py-2 text-sm text-text-primary outline-none transition focus:border-accent"
+            />
+          </label>
+        </div>
+
+        {error && (
+          <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
+            {error}
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="focus-ring rounded-lg border border-base-border bg-base-card px-4 py-2 text-sm text-text-secondary transition hover:bg-base-cardhover active:scale-[0.97]"
+          >
+            {t.cancel}
+          </button>
+          <button
+            onClick={submit}
+            className="focus-ring rounded-lg bg-accent px-4 py-2 text-sm font-bold text-white transition hover:bg-accent-hover active:scale-[0.97]"
+          >
+            {t.save}
           </button>
         </div>
       </div>

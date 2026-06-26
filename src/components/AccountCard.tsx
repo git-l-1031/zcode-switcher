@@ -148,10 +148,11 @@ function AccountCard({
   const showQuota =
     !!quota && (!!quota.plan_name || hasQuotaBars);
 
-  // hasQuotaBars 作为"是否曾有额度"，影响错误颜色分级
+  // 未切到该账号前，首次额度失败才提示切换重试；当前账号失败要显示真实错误。
   const quotaErr = quota?.error
-    ? describeQuotaError(quota.error, t, hasQuotaBars)
+    ? describeQuotaError(quota.error, t, showQuota || profile.active)
     : null;
+  const showQuotaLoading = quotaLoading && !showQuota;
 
   if (!isListView) {
     return (
@@ -236,7 +237,9 @@ function AccountCard({
         {/* 状态槽：错误 > 刷新成功 > 透明占位 */}
         <span
           className={`mt-1 block truncate text-[10px] ${
-            quotaErr
+            showQuotaLoading
+              ? "font-medium text-text-secondary"
+              : quotaErr
               ? `font-medium ${quotaErr.className}`
               : refreshOk
               ? "font-medium text-ok"
@@ -244,7 +247,13 @@ function AccountCard({
           }`}
           title={quota?.error || ""}
         >
-          {quotaErr ? quotaErr.text : refreshOk ? t.quotaRefreshOk : "—"}
+          {showQuotaLoading
+            ? t.quotaLoadingLabel
+            : quotaErr
+            ? quotaErr.text
+            : refreshOk
+            ? t.quotaRefreshOk
+            : "—"}
         </span>
 
         {/* 底部：常用操作 */}
@@ -489,7 +498,11 @@ function AccountCard({
           {quota!.balances.slice(0, isListView ? 2 : 4).map((b, i) => (
             <QuotaBar key={`${b.show_name}-${i}`} item={b} />
           ))}
-          {quotaErr ? (
+          {showQuotaLoading ? (
+            <div className="text-[11px] font-medium text-text-secondary">
+              {t.quotaLoadingLabel}
+            </div>
+          ) : quotaErr ? (
             <div
               className={`text-[11px] font-medium ${quotaErr.className}`}
               title={quota?.error || ""}
@@ -499,6 +512,10 @@ function AccountCard({
           ) : refreshOk ? (
             <div className="text-[11px] font-medium text-ok">{t.quotaRefreshOk}</div>
           ) : null}
+        </div>
+      ) : showQuotaLoading ? (
+        <div className="border-t border-base-border/70 pt-2 text-[11px] font-medium text-text-secondary">
+          {t.quotaLoadingLabel}
         </div>
       ) : quotaErr ? (
         <div

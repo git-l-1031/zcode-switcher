@@ -1,6 +1,6 @@
 [package]
 name = "zcode-switcher"
-version = "1.1.7"
+version = "1.1.8"
 description = "ZCode Switcher - multi-account switching"
 authors = ["you"]
 edition = "2021"
@@ -24,8 +24,8 @@ sha2 = "0.10"
 base64 = "0.22"
 aes-gcm = "0.10"
 rand = "0.8"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "sync", "time"] }
 dirs = "5"
 anyhow = "1"
 thiserror = "1"
@@ -34,6 +34,10 @@ chrono = { version = "0.4", features = ["serde"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+axum = "0.8"
+bytes = "1"
+tokio-util = "0.7"
+tower-http = { version = "0.6", features = ["cors"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

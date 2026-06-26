@@ -1,6 +1,14 @@
 import { create } from "zustand";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api, type ProfileView, type QuotaInfo } from "./lib/api";
+import {
+  api,
+  type ApiFormat,
+  type AccountPoolEntryView,
+  type CustomProviderView,
+  type ProfileView,
+  type ProxyStatus,
+  type QuotaInfo,
+} from "./lib/api";
 import { glm52Remaining } from "./lib/glm52";
 import { getTexts, type Language } from "./i18n";
 
@@ -21,8 +29,13 @@ const GLM52_THRESHOLD_WAN_MIN = 10;
 const GLM52_THRESHOLD_WAN_MAX = 100;
 const GLM52_DEFAULT_THRESHOLD_WAN = 35;
 const DEFAULT_QUOTA_REFRESH_INTERVAL_MINUTES = 10;
+const DEFAULT_ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES = 1;
+const ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES_KEY = "zcs:activeQuotaRefreshIntervalMinutes";
 const DEFAULT_THEME: Theme = "light";
 const QUOTA_CACHE_KEY = "zcs:quotas";
+const DEFAULT_PROXY_PORT = 17860;
+const PROXY_PORT_KEY = "zcs:proxyPort";
+const PROXY_GATEWAY_KEY = "zcs:proxyGatewayKey";
 
 interface ToastMsg {
   id: number;
@@ -41,6 +54,8 @@ interface AppState {
   autoRefreshQuota: boolean;
   /** 自动刷新额度的间隔分钟数，0 表示关闭 */
   quotaRefreshIntervalMinutes: number;
+  /** 当前账号刷新间隔分钟数，限制 1-5 分钟 */
+  activeQuotaRefreshIntervalMinutes: number;
   /** 用来重置定时器倒计时的 tick */
   scheduledRefreshSeq: number;
   glm52AutoSwitchEnabled: boolean;
@@ -53,6 +68,11 @@ interface AppState {
   /** 悬浮窗缩放比例，1 为原始大小 */
   floatingWindowScale: number;
   updateAvailable: boolean;
+  customProviders: CustomProviderView[];
+  accountPool: AccountPoolEntryView[];
+  proxyStatus: ProxyStatus | null;
+  proxyPort: number;
+  proxyGatewayKey: string;
   accountViewMode: AccountViewMode;
   /** 账号列表排序方式（当前账号始终置顶） */
   accountSortMode: AccountSortMode;
@@ -70,14 +90,15 @@ interface AppState {
   deleteProfiles: (ids: string[]) => Promise<{ deleted: number; failed: number }>;
 
   refreshQuota: (id: string) => Promise<void>;
-  refreshAllQuota: () => Promise<void>;
+  refreshAllQuota: (orderedIds?: string[]) => Promise<void>;
   /** 只刷新还没有额度数据的账号 */
   refreshMissingQuota: () => Promise<void>;
   /** 定时触发的批量刷新 */
-  scheduledRefreshAllQuota: () => Promise<void>;
+  scheduledRefreshAllQuota: (orderedIds?: string[]) => Promise<void>;
   refreshActiveQuotaForAutoSwitch: () => Promise<void>;
   setAutoRefreshQuota: (v: boolean) => void;
   setQuotaRefreshIntervalMinutes: (v: number) => void;
+  setActiveQuotaRefreshIntervalMinutes: (v: number) => void;
   setGlm52AutoSwitchEnabled: (v: boolean) => void;
   setGlm52AutoSwitchThresholdWan: (v: number) => void;
   setAutoRestart: (v: boolean) => void;
@@ -86,6 +107,26 @@ interface AppState {
   setFloatingWindowMode: (v: boolean) => void;
   setFloatingWindowScale: (v: number) => void;
   setUpdateAvailable: (v: boolean) => void;
+  refreshCustomProviders: () => Promise<void>;
+  refreshAccountPool: () => Promise<void>;
+  addAccountToPool: (profileId: string) => Promise<boolean>;
+  setAccountPoolEnabled: (profileId: string, enabled: boolean) => Promise<boolean>;
+  removeAccountFromPool: (profileId: string) => Promise<boolean>;
+  addCustomProvider: (
+    name: string,
+    baseUrl: string,
+    apiKey: string,
+    apiFormat: ApiFormat,
+    models: string[]
+  ) => Promise<boolean>;
+  deleteCustomProvider: (id: string) => Promise<boolean>;
+  setCustomProviderEnabled: (id: string, enabled: boolean) => Promise<boolean>;
+  activateCustomProvider: (id: string) => Promise<boolean>;
+  refreshProxyStatus: () => Promise<void>;
+  startLocalProxy: () => Promise<boolean>;
+  stopLocalProxy: () => Promise<boolean>;
+  setProxyPort: (v: number) => void;
+  regenerateProxyGatewayKey: () => void;
   setAccountViewMode: (v: AccountViewMode) => void;
   setAccountSortMode: (v: AccountSortMode) => void;
   setHideAccountIdentity: (v: boolean) => void;
@@ -101,6 +142,37 @@ let glm52AutoSwitching = false;
 let lastGlm52NoCandidateAt = 0;
 
 let refreshAllInFlight = false;
+
+function orderedProfilesForRefresh(
+  state: AppState,
+  orderedIds?: string[]
+): ProfileView[] {
+  if (orderedIds?.length) {
+    return orderedIds
+      .map((id) => state.profiles.find((profile) => profile.id === id))
+      .filter((profile): profile is ProfileView => !!profile);
+  }
+  const sorted = [...state.profiles];
+  sorted.sort((a, b) => {
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    switch (state.accountSortMode) {
+      case "name-asc":
+        return a.name.localeCompare(b.name, undefined, { numeric: true });
+      case "name-desc":
+        return b.name.localeCompare(a.name, undefined, { numeric: true });
+      case "quota-desc":
+        return (glm52Remaining(state.quotas[b.id]) ?? -1) -
+          (glm52Remaining(state.quotas[a.id]) ?? -1);
+      case "quota-asc":
+        return (glm52Remaining(state.quotas[a.id]) ?? Number.MAX_SAFE_INTEGER) -
+          (glm52Remaining(state.quotas[b.id]) ?? Number.MAX_SAFE_INTEGER);
+      case "expiry-asc":
+        return (state.quotas[a.id]?.plan_ends_at ?? Number.MAX_SAFE_INTEGER) -
+          (state.quotas[b.id]?.plan_ends_at ?? Number.MAX_SAFE_INTEGER);
+    }
+  });
+  return sorted;
+}
 
 function isQuotaInfo(value: unknown): value is QuotaInfo {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -254,6 +326,61 @@ function loadLanguage(): Language {
     return "zh";
   }
 }
+function clampActiveQuotaRefreshIntervalMinutes(v: number): number {
+  if (!Number.isFinite(v)) return DEFAULT_ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES;
+  return Math.max(1, Math.min(5, Math.round(v)));
+}
+function loadActiveQuotaRefreshIntervalMinutes(): number {
+  try {
+    const saved = localStorage.getItem(ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES_KEY);
+    if (saved === null) return DEFAULT_ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES;
+    return clampActiveQuotaRefreshIntervalMinutes(Number(saved));
+  } catch {
+    return DEFAULT_ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES;
+  }
+}
+
+function randomGatewayKey(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  const bytes = new Uint8Array(32);
+  try {
+    crypto.getRandomValues(bytes);
+  } catch {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}
+
+function loadProxyPort(): number {
+  try {
+    const saved = Number(localStorage.getItem(PROXY_PORT_KEY));
+    return Number.isFinite(saved) && saved > 0 && saved <= 65535
+      ? Math.round(saved)
+      : DEFAULT_PROXY_PORT;
+  } catch {
+    return DEFAULT_PROXY_PORT;
+  }
+}
+
+function loadProxyGatewayKey(): string {
+  try {
+    const saved = localStorage.getItem(PROXY_GATEWAY_KEY);
+    if (saved && saved.length >= 12) return saved;
+    const key = randomGatewayKey();
+    localStorage.setItem(PROXY_GATEWAY_KEY, key);
+    return key;
+  } catch {
+    return randomGatewayKey();
+  }
+}
+
+function hasDisplayableQuota(quota?: QuotaInfo): boolean {
+  return !!quota && !quota.error && ((quota.balances?.length ?? 0) > 0 || !!quota.plan_name);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 /** 把主题应用到 <html data-theme> 及窗口背景 */
 function applyTheme(theme: Theme) {
@@ -362,6 +489,7 @@ export const useStore = create<AppState>((set, get) => {
     recentlyRefreshed: {},
     autoRefreshQuota: loadAutoRefresh(),
     quotaRefreshIntervalMinutes: loadQuotaRefreshIntervalMinutes(),
+    activeQuotaRefreshIntervalMinutes: loadActiveQuotaRefreshIntervalMinutes(),
     scheduledRefreshSeq: 0,
     glm52AutoSwitchEnabled: loadGlm52AutoSwitchEnabled(),
     glm52AutoSwitchThresholdWan: loadGlm52AutoSwitchThresholdWan(),
@@ -371,6 +499,11 @@ export const useStore = create<AppState>((set, get) => {
     floatingWindowMode: initialFloatingWindowMode,
     floatingWindowScale: loadFloatingWindowScale(),
     updateAvailable: false,
+    customProviders: [],
+    accountPool: [],
+    proxyStatus: null,
+    proxyPort: loadProxyPort(),
+    proxyGatewayKey: loadProxyGatewayKey(),
     accountViewMode: loadAccountViewMode(),
     accountSortMode: loadAccountSortMode(),
     hideAccountIdentity: loadHideAccountIdentity(),
@@ -450,6 +583,17 @@ export const useStore = create<AppState>((set, get) => {
       } else {
         toast(t.switchedManualNotice.replace("{name}", r.name), "success");
       }
+      if (!hasDisplayableQuota(get().quotas[id])) {
+        set((s) => ({ loadingQuota: { ...s.loadingQuota, [id]: true } }));
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          if (attempt > 0) {
+            set((s) => ({ loadingQuota: { ...s.loadingQuota, [id]: true } }));
+            await delay(1000);
+          }
+          await get().refreshQuota(id);
+          if (hasDisplayableQuota(get().quotas[id])) break;
+        }
+      }
       return true;
     } catch (e) {
       get().toast(
@@ -484,13 +628,15 @@ export const useStore = create<AppState>((set, get) => {
       const ok = await api.deleteProfile(id);
       if (ok) {
         get().toast(getTexts(get().language).deleteSuccess, "success");
-        // 清掉对应额度缓存
+        // 直接从本地列表移除，清掉对应额度缓存
         set((s) => {
           const { [id]: _drop, ...rest } = s.quotas;
           saveCachedQuotas(rest);
-          return { quotas: rest };
+          return {
+            profiles: s.profiles.filter((p) => p.id !== id),
+            quotas: rest,
+          };
         });
-        await get().refresh();
       }
       return ok;
     } catch (e) {
@@ -523,10 +669,12 @@ export const useStore = create<AppState>((set, get) => {
           const quotas = { ...s.quotas };
           for (const id of deletedIds) delete quotas[id];
           saveCachedQuotas(quotas);
-          return { quotas };
+          return {
+            profiles: s.profiles.filter((p) => !deletedIds.includes(p.id)),
+            quotas,
+          };
         });
       }
-      await get().refresh(true);
       const t = getTexts(get().language);
       if (errors.length === 0) {
         get().toast(
@@ -603,13 +751,15 @@ export const useStore = create<AppState>((set, get) => {
     }
   },
 
-  refreshAllQuota: async () => {
+  refreshAllQuota: async (orderedIds) => {
     // 进行中跳过，完成后 bump tick 重置定时器倒计时
     if (refreshAllInFlight) return;
     refreshAllInFlight = true;
     try {
-      const { profiles, refreshQuota } = get();
-      for (const p of profiles) {
+      const state = get();
+      const { refreshQuota } = state;
+      const ordered = orderedProfilesForRefresh(state, orderedIds);
+      for (const p of ordered) {
         await refreshQuota(p.id);
       }
       await maybeSwitchGlm52Account(get());
@@ -631,13 +781,15 @@ export const useStore = create<AppState>((set, get) => {
     }
   },
 
-  scheduledRefreshAllQuota: async () => {
+  scheduledRefreshAllQuota: async (orderedIds) => {
     // 进行中跳过；tryNoRestartSwitch 时跳过当前活跃账号
     if (refreshAllInFlight) return;
     refreshAllInFlight = true;
     try {
-      const { profiles, refreshQuota, tryNoRestartSwitch } = get();
-      for (const p of profiles) {
+      const state = get();
+      const { refreshQuota, tryNoRestartSwitch } = state;
+      const ordered = orderedProfilesForRefresh(state, orderedIds);
+      for (const p of ordered) {
         if (tryNoRestartSwitch && p.active) continue;
         await refreshQuota(p.id);
       }
@@ -671,6 +823,16 @@ export const useStore = create<AppState>((set, get) => {
       /* ignore */
     }
     set({ quotaRefreshIntervalMinutes: minutes });
+  },
+
+  setActiveQuotaRefreshIntervalMinutes: (v) => {
+    const minutes = clampActiveQuotaRefreshIntervalMinutes(v);
+    try {
+      localStorage.setItem(ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES_KEY, String(minutes));
+    } catch {
+      /* ignore */
+    }
+    set({ activeQuotaRefreshIntervalMinutes: minutes });
   },
 
   setGlm52AutoSwitchEnabled: (v) => {
@@ -770,6 +932,250 @@ export const useStore = create<AppState>((set, get) => {
 
   setUpdateAvailable: (v) => {
     set({ updateAvailable: v });
+  },
+
+  refreshCustomProviders: async () => {
+    try {
+      const customProviders = await api.listCustomProviders();
+      set({ customProviders });
+    } catch (e) {
+      get().toast(
+        getTexts(get().language).providerLoadFailed.replace("{error}", String(e)),
+        "error"
+      );
+    }
+  },
+
+  refreshAccountPool: async () => {
+    try {
+      const accountPool = await api.listAccountPool();
+      set({ accountPool });
+    } catch (e) {
+      get().toast(String(e), "error");
+    }
+  },
+
+  addAccountToPool: async (profileId) => {
+    try {
+      const entry = await api.addAccountToPool(profileId);
+      set((s) => ({
+        accountPool: [
+          ...s.accountPool.filter((item) => item.profile_id !== entry.profile_id),
+          entry,
+        ],
+      }));
+      return true;
+    } catch (e) {
+      get().toast(String(e), "error");
+      return false;
+    }
+  },
+
+  setAccountPoolEnabled: async (profileId, enabled) => {
+    try {
+      const entry = await api.setAccountPoolEnabled(profileId, enabled);
+      set((s) => ({
+        accountPool: s.accountPool.map((item) =>
+          item.profile_id === profileId ? entry : item
+        ),
+      }));
+      return true;
+    } catch (e) {
+      get().toast(String(e), "error");
+      return false;
+    }
+  },
+
+  removeAccountFromPool: async (profileId) => {
+    try {
+      const ok = await api.removeAccountFromPool(profileId);
+      if (ok) {
+        set((s) => ({
+          accountPool: s.accountPool.filter((item) => item.profile_id !== profileId),
+        }));
+      }
+      return ok;
+    } catch (e) {
+      get().toast(String(e), "error");
+      return false;
+    }
+  },
+
+  addCustomProvider: async (name, baseUrl, apiKey, apiFormat, models) => {
+    set({ busy: true });
+    try {
+      const provider = await api.addCustomProvider(
+        name,
+        baseUrl,
+        apiKey,
+        apiFormat,
+        models
+      );
+      set((s) => ({ customProviders: [...s.customProviders, provider] }));
+      get().toast(getTexts(get().language).providerAdded, "success");
+      return true;
+    } catch (e) {
+      get().toast(
+        getTexts(get().language).providerAddFailed.replace("{error}", String(e)),
+        "error"
+      );
+      return false;
+    } finally {
+      set({ busy: false });
+    }
+  },
+
+  deleteCustomProvider: async (id) => {
+    try {
+      const ok = await api.deleteCustomProvider(id);
+      if (ok) {
+        set((s) => ({
+          customProviders: s.customProviders.filter((provider) => provider.id !== id),
+        }));
+        get().toast(getTexts(get().language).providerDeleted, "success");
+      }
+      return ok;
+    } catch (e) {
+      get().toast(
+        getTexts(get().language).providerDeleteFailed.replace("{error}", String(e)),
+        "error"
+      );
+      return false;
+    }
+  },
+
+  setCustomProviderEnabled: async (id, enabled) => {
+    const provider = get().customProviders.find((item) => item.id === id);
+    if (!provider) return false;
+    try {
+      const updated = await api.updateCustomProvider(
+        provider.id,
+        provider.name,
+        provider.base_url,
+        null,
+        provider.api_format,
+        provider.models,
+        enabled
+      );
+      set((s) => ({
+        customProviders: s.customProviders.map((item) =>
+          item.id === id ? updated : item
+        ),
+      }));
+      return true;
+    } catch (e) {
+      get().toast(
+        getTexts(get().language).providerUpdateFailed.replace("{error}", String(e)),
+        "error"
+      );
+      return false;
+    }
+  },
+
+  activateCustomProvider: async (id) => {
+    const providers = get().customProviders;
+    const target = providers.find((item) => item.id === id);
+    if (!target) return false;
+    try {
+      const updatedProviders = [];
+      for (const provider of providers) {
+        const shouldEnable = provider.id === id;
+        if (provider.enabled === shouldEnable) {
+          updatedProviders.push(provider);
+          continue;
+        }
+        const updated = await api.updateCustomProvider(
+          provider.id,
+          provider.name,
+          provider.base_url,
+          null,
+          provider.api_format,
+          provider.models,
+          shouldEnable
+        );
+        updatedProviders.push(updated);
+      }
+      set({ customProviders: updatedProviders });
+      get().toast(
+        getTexts(get().language).providerActivated.replace("{name}", target.name),
+        "success"
+      );
+      return true;
+    } catch (e) {
+      get().toast(
+        getTexts(get().language).providerActivateFailed.replace("{error}", String(e)),
+        "error"
+      );
+      return false;
+    }
+  },
+
+  refreshProxyStatus: async () => {
+    try {
+      const proxyStatus = await api.proxyStatus();
+      set({
+        proxyStatus,
+        proxyPort: proxyStatus.port > 0 ? proxyStatus.port : get().proxyPort,
+      });
+    } catch {
+      set({ proxyStatus: null });
+    }
+  },
+
+  startLocalProxy: async () => {
+    try {
+      const proxyStatus = await api.startProxy(get().proxyPort, get().proxyGatewayKey);
+      set({ proxyStatus, proxyPort: proxyStatus.port });
+      try {
+        localStorage.setItem(PROXY_PORT_KEY, String(proxyStatus.port));
+      } catch {
+        /* ignore */
+      }
+      get().toast(getTexts(get().language).proxyStarted, "success");
+      return true;
+    } catch (e) {
+      get().toast(
+        getTexts(get().language).proxyStartFailed.replace("{error}", String(e)),
+        "error"
+      );
+      return false;
+    }
+  },
+
+  stopLocalProxy: async () => {
+    try {
+      const proxyStatus = await api.stopProxy();
+      set({ proxyStatus });
+      get().toast(getTexts(get().language).proxyStoppedToast, "success");
+      return true;
+    } catch (e) {
+      get().toast(
+        getTexts(get().language).proxyStopFailed.replace("{error}", String(e)),
+        "error"
+      );
+      return false;
+    }
+  },
+
+  setProxyPort: (v) => {
+    const port = Number.isFinite(v) && v > 0 ? Math.min(65535, Math.round(v)) : DEFAULT_PROXY_PORT;
+    try {
+      localStorage.setItem(PROXY_PORT_KEY, String(port));
+    } catch {
+      /* ignore */
+    }
+    set({ proxyPort: port });
+  },
+
+  regenerateProxyGatewayKey: () => {
+    const proxyGatewayKey = randomGatewayKey();
+    try {
+      localStorage.setItem(PROXY_GATEWAY_KEY, proxyGatewayKey);
+    } catch {
+      /* ignore */
+    }
+    set({ proxyGatewayKey });
+    get().toast(getTexts(get().language).proxyKeyRegenerated, "success");
   },
 
   setAccountViewMode: (v) => {

@@ -1,5 +1,7 @@
 # 发布说明
 
+发布流程、更新日志、施工日志和公告格式的统一说明见 `docs/publish-and-format-guide.md`。
+
 ## 应用内更新
 
 - 软件会从 GitHub Releases 检查更新：

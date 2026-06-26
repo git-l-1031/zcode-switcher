@@ -68,6 +68,39 @@ export interface RefreshZcodeAppServerReport {
   restarted: boolean;
 }
 
+export type ApiFormat = "anthropic" | "openai";
+
+export interface CustomProviderView {
+  id: string;
+  name: string;
+  base_url: string;
+  api_format: ApiFormat;
+  models: string[];
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ProxyStatus {
+  running: boolean;
+  port: number;
+  base_url: string;
+}
+
+export interface AccountPoolEntryView {
+  profile_id: string;
+  name: string;
+  email: string;
+  phone: string;
+  avatar: string;
+  family: string;
+  mode: string;
+  active: boolean;
+  enabled: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
 /** 调用后端命令，错误会被 reject 成字符串。 */
 export async function cmd<T>(name: string, args?: Record<string, unknown>): Promise<T> {
   return invoke<T>(name, args);
@@ -117,6 +150,61 @@ export const api = {
         deadlineSeconds: deadlineSeconds ?? null,
       }
     ),
+  listCustomProviders: () => cmd<CustomProviderView[]>("list_custom_providers"),
+  addCustomProvider: (
+    name: string,
+    baseUrl: string,
+    apiKey: string,
+    apiFormat: ApiFormat,
+    models: string[]
+  ) =>
+    cmd<CustomProviderView>("add_custom_provider", {
+      name,
+      baseUrl,
+      apiKey,
+      apiFormat,
+      models,
+    }),
+  updateCustomProvider: (
+    id: string,
+    name: string,
+    baseUrl: string,
+    apiKey: string | null,
+    apiFormat: ApiFormat,
+    models: string[],
+    enabled: boolean
+  ) =>
+    cmd<CustomProviderView>("update_custom_provider", {
+      id,
+      name,
+      baseUrl,
+      apiKey,
+      apiFormat,
+      models,
+      enabled,
+    }),
+  deleteCustomProvider: (id: string) =>
+    cmd<boolean>("delete_custom_provider", { id }),
+  listAccountPool: () => cmd<AccountPoolEntryView[]>("list_account_pool"),
+  addAccountToPool: (profileId: string) =>
+    cmd<AccountPoolEntryView>("add_account_to_pool", { profileId }),
+  setAccountPoolEnabled: (profileId: string, enabled: boolean) =>
+    cmd<AccountPoolEntryView>("set_account_pool_enabled", { profileId, enabled }),
+  removeAccountFromPool: (profileId: string) =>
+    cmd<boolean>("remove_account_from_pool", { profileId }),
+  startProxy: (port: number, gatewayKey: string) =>
+    cmd<ProxyStatus>("start_proxy", { port, gatewayKey }),
+  stopProxy: () => cmd<ProxyStatus>("stop_proxy"),
+  proxyStatus: () => cmd<ProxyStatus>("proxy_status"),
+  inspectDownloadUrl: (url: string) =>
+    cmd<{ filename: string; contentType: string | null; contentLength: number | null }>(
+      "inspect_download_url",
+      { url }
+    ),
+  downloadUrlToFile: (url: string, path: string) =>
+    cmd<void>("download_url_to_file", { url, path }),
+  downloadUrlToDirectory: (url: string, directory: string) =>
+    cmd<{ path: string; filename: string }>("download_url_to_directory", { url, directory }),
 };
 
 type Option<T> = T | null;

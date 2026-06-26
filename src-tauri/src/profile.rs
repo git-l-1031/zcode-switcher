@@ -386,7 +386,9 @@ fn all_builtin_provider_ids() -> impl Iterator<Item = &'static str> {
 fn extract_active_provider_family(cred_bytes: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(cred_bytes).ok()?;
     let creds: Value = serde_json::from_str(text).ok()?;
-    let raw = creds.get("oauth:active_provider").and_then(|v| v.as_str())?;
+    let raw = creds
+        .get("oauth:active_provider")
+        .and_then(|v| v.as_str())?;
     let plain = crate::crypto::decrypt(raw).ok()?;
     let trimmed = plain.trim();
     if trimmed == "zai" || trimmed == "bigmodel" {
@@ -1548,6 +1550,19 @@ pub fn import_profile_from_file(path: String) -> R<Profile> {
     import_profile_json(json)
 }
 
+pub fn profile_credentials_text(id: &str) -> R<String> {
+    let profiles = load_index();
+    let p = profiles
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| AppError::Msg("档案不存在".into()))?;
+    if p.cred_file.is_empty() {
+        return Err(AppError::Msg("该档案缺少凭据副本".into()));
+    }
+    let bytes = fs::read(profiles_dir()?.join(&p.cred_file))?;
+    String::from_utf8(bytes).map_err(|e| AppError::Msg(format!("credentials 不是 UTF-8：{}", e)))
+}
+
 /// 在系统文件管理器里打开 ZCode 配置目录。
 #[tauri::command]
 pub fn open_config_dir() -> R<()> {
@@ -1574,15 +1589,7 @@ pub async fn fetch_quota(id: Option<String>) -> R<crate::quota::QuotaInfo> {
     let cred_bytes = match id {
         Some(i) if !i.is_empty() => {
             // 从档案副本读取
-            let profiles = load_index();
-            let p = profiles
-                .into_iter()
-                .find(|p| p.id == i)
-                .ok_or_else(|| AppError::Msg("档案不存在".into()))?;
-            if p.cred_file.is_empty() {
-                return Err(AppError::Msg("该档案缺少凭据副本".into()));
-            }
-            fs::read(profiles_dir()?.join(&p.cred_file))?
+            profile_credentials_text(&i)?.into_bytes()
         }
         _ => {
             // 当前 credentials.json

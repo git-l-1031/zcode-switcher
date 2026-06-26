@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Download,
+  ExternalLink,
   FolderOpen,
   Info,
   ShieldCheck,
@@ -13,12 +14,15 @@ import {
   Check,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type DownloadEvent } from "@tauri-apps/plugin-updater";
 import { useStore, type Theme } from "../store";
 import { api } from "../lib/api";
 import { formatText, getTexts, type Language } from "../i18n";
 import { UpdateModal } from "./Modal";
+
+const PROJECT_HOMEPAGE_URL = "https://github.com/git-l-1031/zcode-switcher";
 
 function Toggle({
   on,
@@ -310,6 +314,8 @@ export default function SettingsPanel() {
   const {
     quotaRefreshIntervalMinutes,
     setQuotaRefreshIntervalMinutes,
+    activeQuotaRefreshIntervalMinutes,
+    setActiveQuotaRefreshIntervalMinutes,
     glm52AutoSwitchEnabled,
     setGlm52AutoSwitchEnabled,
     glm52AutoSwitchThresholdWan,
@@ -518,6 +524,27 @@ export default function SettingsPanel() {
 
       <Row
         icon={<Clock size={15} />}
+        title={t.activeRefreshTitle}
+        desc={glm52AutoSwitchEnabled ? t.activeRefreshDescAuto : t.activeRefreshDesc}
+      >
+        <select
+          value={activeQuotaRefreshIntervalMinutes}
+          onChange={(e) =>
+            setActiveQuotaRefreshIntervalMinutes(Number(e.currentTarget.value))
+          }
+          disabled={glm52AutoSwitchEnabled}
+          className="focus-ring h-8 rounded-lg border border-base-border bg-base-card px-2 text-sm font-semibold text-text-primary outline-none transition hover:bg-base-cardhover disabled:opacity-50"
+        >
+          {[1, 2, 3, 4, 5].map((minute) => (
+            <option key={minute} value={minute}>
+              {formatText(t.minuteOption, { count: minute })}
+            </option>
+          ))}
+        </select>
+      </Row>
+
+      <Row
+        icon={<Clock size={15} />}
         title={t.timedRefreshTitle}
         desc={t.timedRefreshDesc}
       >
@@ -573,6 +600,22 @@ export default function SettingsPanel() {
         />
       </Row>
 
+      <Row
+        icon={<ExternalLink size={15} />}
+        title={t.projectHomepage}
+        desc={PROJECT_HOMEPAGE_URL}
+      >
+        <ActionButton
+          icon={<ExternalLink size={13} />}
+          label={t.open}
+          onClick={() =>
+            openUrl(PROJECT_HOMEPAGE_URL).catch((e) =>
+              toast(formatText(t.projectHomepageOpenFailed, { error: String(e) }), "error")
+            )
+          }
+        />
+      </Row>
+
       <div className="px-5 py-4 text-[11px] leading-relaxed text-text-muted">
         <div className="mb-2 flex items-center gap-1.5 text-text-secondary">
           <ShieldCheck size={13} /> {t.localFirst}
@@ -582,11 +625,6 @@ export default function SettingsPanel() {
           ~/.zcode/v2
         </code>{" "}
         {t.privacyAfterPath}
-      </div>
-
-      <div className="px-5 py-3 text-[11px] text-text-muted">
-        <Info size={11} className="mr-1 inline" />
-        {t.disclaimer}
       </div>
 
       {updateModal && (
@@ -601,6 +639,7 @@ export default function SettingsPanel() {
           onClose={() => updateModal.resolve?.(false)}
         />
       )}
+
     </div>
   );
 }
