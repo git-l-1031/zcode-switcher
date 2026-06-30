@@ -9,7 +9,7 @@
 <img src="https://raw.githubusercontent.com/git-l-1031/zcode-switcher/main/src/assets/zcode-logo.png" alt="ZCode Switcher Logo" width="132" />
 
 <p><strong>ZCode 账号管理与无感切换桌面工具</strong></p>
-<p>本地账号库 · 额度显示 · 自动切换 · 胶囊悬浮窗 · 应用内更新</p>
+<p>无需重启 · 额度显示 · 自动切换 · 胶囊悬浮窗 · 应用内更新</p>
 
 [![Release](https://img.shields.io/github/v/release/git-l-1031/zcode-switcher?style=flat-square)](https://github.com/git-l-1031/zcode-switcher/releases)
 [![Downloads](https://img.shields.io/github/downloads/git-l-1031/zcode-switcher/total?style=flat-square)](https://github.com/git-l-1031/zcode-switcher/releases)
