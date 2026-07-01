@@ -3,6 +3,7 @@
 ## 1.1.9
 
 - 升级无感切换体验。
+- 新增 macOS Apple Silicon 内测版 DMG。
 
 ## 1.1.8
 

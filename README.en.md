@@ -15,6 +15,7 @@
 [![Downloads](https://img.shields.io/github/downloads/git-l-1031/zcode-switcher/total?style=flat-square)](https://github.com/git-l-1031/zcode-switcher/releases)
 [![Last Commit](https://img.shields.io/github/last-commit/git-l-1031/zcode-switcher?style=flat-square)](https://github.com/git-l-1031/zcode-switcher/commits/main)
 [![Windows](https://img.shields.io/badge/Windows-10%2B-0078D4?style=flat-square&logo=windows&logoColor=white)](https://github.com/git-l-1031/zcode-switcher/releases)
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?style=flat-square&logo=apple&logoColor=white)](https://github.com/git-l-1031/zcode-switcher/releases)
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=222)](https://react.dev/)
 
@@ -46,13 +47,12 @@ All account profiles are stored on your own computer and are not uploaded to any
 
 ## Download
 
-Download the latest Windows installer from [Releases](https://github.com/git-l-1031/zcode-switcher/releases).
+Download the installer for your platform from [Releases](https://github.com/git-l-1031/zcode-switcher/releases):
 
-Installer names usually look like:
+- Windows x64: `ZCode.Switcher_x.x.x_x64-setup.exe`
+- macOS Apple Silicon beta: `ZCode.Switcher_x.x.x_aarch64.dmg`
 
-```text
-ZCode.Switcher_x.x.x_x64-setup.exe
-```
+The macOS build is not yet notarized with an Apple Developer ID. On first launch, you may need to allow it in System Settings → Privacy & Security.
 
 ## Usage Flow
 

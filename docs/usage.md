@@ -1,5 +1,12 @@
 # 使用说明
 
+## 安装
+
+- Windows x64：从 GitHub Releases 下载 `ZCode.Switcher_x.x.x_x64-setup.exe`。
+- macOS Apple Silicon：下载 `ZCode.Switcher_x.x.x_aarch64.dmg`，打开后将应用拖入“应用程序”目录。
+
+macOS 当前为未公证内测版。首次启动如被系统阻止，请打开“系统设置 → 隐私与安全”，确认允许打开 ZCode Switcher。
+
 ## 悬浮窗模式
 
 先在设置中开启“无感切换”，再开启“悬浮窗模式”。
