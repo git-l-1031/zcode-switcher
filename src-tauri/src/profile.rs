@@ -346,11 +346,12 @@ struct AccountIdentity {
     email: String,
     phone: String,
     avatar: String,
+    user_id: String,
 }
 
 impl AccountIdentity {
     fn key(&self) -> Option<String> {
-        identity_key(&self.email, &self.phone)
+        identity_key(&self.email, &self.phone, &self.user_id)
     }
 }
 
@@ -500,7 +501,7 @@ fn extract_identity_from_credentials(cred_bytes: &[u8]) -> AccountIdentity {
     let Ok(creds) = serde_json::from_str::<Value>(text) else {
         return AccountIdentity::default();
     };
-    match crate::crypto::extract_user_info(&creds) {
+    let mut identity = match crate::crypto::extract_user_info(&creds) {
         Some(info) => {
             let phone = info
                 .phone
@@ -513,10 +514,19 @@ fn extract_identity_from_credentials(cred_bytes: &[u8]) -> AccountIdentity {
                 email: info.email.unwrap_or_default(),
                 phone,
                 avatar: info.avatar.unwrap_or_default(),
+                user_id: info.user_id.unwrap_or_default(),
             }
         }
         None => AccountIdentity::default(),
+    };
+    if identity.user_id.is_empty() {
+        if let Some(token) = crate::crypto::extract_jwt_token(&creds) {
+            if let Some(uid) = jwt::extract_user_id(&token) {
+                identity.user_id = uid;
+            }
+        }
     }
+    identity
 }
 
 fn decrypt_portable_credentials(value: Value) -> R<Value> {
@@ -580,7 +590,7 @@ fn normalize_phone(phone: &str) -> String {
     phone.chars().filter(|ch| ch.is_ascii_digit()).collect()
 }
 
-fn identity_key(email: &str, phone: &str) -> Option<String> {
+fn identity_key(email: &str, phone: &str, user_id: &str) -> Option<String> {
     let email = normalize_email(email);
     if !email.is_empty() {
         return Some(format!("email:{}", email));
@@ -589,7 +599,15 @@ fn identity_key(email: &str, phone: &str) -> Option<String> {
     if !phone.is_empty() {
         return Some(format!("phone:{}", phone));
     }
+    let user_id = user_id.trim();
+    if !user_id.is_empty() {
+        return Some(format!("uid:{}", user_id));
+    }
     None
+}
+
+fn profile_identity_key(profile: &Profile) -> Option<String> {
+    identity_key(&profile.email, &profile.phone, &profile.user_id)
 }
 
 fn account_label(email: &str, phone: &str) -> String {
@@ -673,7 +691,7 @@ fn find_profile_by_identity<'a>(
     let key = identity.key()?;
     profiles
         .iter()
-        .find(|p| identity_key(&p.email, &p.phone).as_deref() == Some(key.as_str()))
+        .find(|p| profile_identity_key(p).as_deref() == Some(key.as_str()))
 }
 
 fn update_profile_from_capture(
@@ -927,7 +945,7 @@ pub fn list_profiles() -> R<Vec<ProfileView>> {
         .map(|p| {
             let active = active_key
                 .as_ref()
-                .map(|key| identity_key(&p.email, &p.phone).as_deref() == Some(key.as_str()))
+                .map(|key| profile_identity_key(&p).as_deref() == Some(key.as_str()))
                 .unwrap_or(false);
             let short_id = short_id(&p.user_id);
             ProfileView {
@@ -992,12 +1010,15 @@ pub fn capture_current(name: String) -> R<Profile> {
     let cred_hash = sha256_bytes(&cred_bytes);
     let metadata = detect_account_metadata(&cred_bytes);
 
-    // 从 config.json 取 user_id（JWT），并尝试从解密后的 user_info 取 用户名/email/avatar
-    let user_id = extract_user_id_from_config();
     let identity = extract_identity_from_credentials(&cred_bytes);
+    let user_id = if !identity.user_id.is_empty() {
+        identity.user_id.clone()
+    } else {
+        extract_user_id_from_config()
+    };
     let Some(key) = identity.key() else {
         return Err(AppError::Msg(
-            "未识别到当前账号邮箱或手机号，无法确认唯一账号。请先在 ZCode 重新登录后再保存。"
+            "未识别到当前账号邮箱、手机号或用户 ID，无法确认唯一账号。请先在 ZCode 重新登录后再保存。"
                 .into(),
         ));
     };
@@ -1011,10 +1032,10 @@ pub fn capture_current(name: String) -> R<Profile> {
 
     let mut profiles = load_index();
 
-    // 邮箱优先、手机号兜底作为唯一标识；再次保存同账号时更新凭据副本而不是新增档案。
+    // 邮箱优先、手机号其次、用户 ID 兜底；再次保存同账号时更新凭据副本而不是新增档案。
     if let Some(p) = profiles
         .iter_mut()
-        .find(|p| identity_key(&p.email, &p.phone).as_deref() == Some(key.as_str()))
+        .find(|p| profile_identity_key(p).as_deref() == Some(key.as_str()))
     {
         let saved = update_profile_from_capture(
             p,
@@ -1174,7 +1195,7 @@ pub fn delete_profile(id: String) -> R<bool> {
     if let Some(identity) = current_identity() {
         let current_key = identity.key();
         let is_active = profiles.iter().any(|p| {
-            p.id == id && current_key.as_deref() == identity_key(&p.email, &p.phone).as_deref()
+            p.id == id && current_key.as_deref() == profile_identity_key(p).as_deref()
         });
         if is_active {
             return Err(AppError::Msg("不能删除当前正在使用的账号".into()));
@@ -1254,7 +1275,6 @@ fn import_portable_account(portable: PortableAccount) -> R<Profile> {
     let cred_hash = sha256_bytes(&cred_bytes);
     let identity_from_creds = extract_identity_from_credentials(&cred_bytes);
 
-    let user_id = portable.profile.user_id.trim().to_string();
     let email = if !identity_from_creds.email.trim().is_empty() {
         identity_from_creds.email
     } else {
@@ -1265,9 +1285,14 @@ fn import_portable_account(portable: PortableAccount) -> R<Profile> {
     } else {
         portable.profile.phone.trim().to_string()
     };
-    let Some(key) = identity_key(&email, &phone) else {
+    let user_id = if !identity_from_creds.user_id.trim().is_empty() {
+        identity_from_creds.user_id.trim().to_string()
+    } else {
+        portable.profile.user_id.trim().to_string()
+    };
+    let Some(key) = identity_key(&email, &phone, &user_id) else {
         return Err(AppError::Msg(
-            "未识别到账号邮箱或手机号，无法确认唯一账号，未导入。".into(),
+            "未识别到账号邮箱、手机号或用户 ID，无法确认唯一账号，未导入。".into(),
         ));
     };
     let avatar = if !portable.profile.avatar.trim().is_empty() {
@@ -1316,7 +1341,7 @@ fn import_portable_account(portable: PortableAccount) -> R<Profile> {
     let mut profiles = load_index();
     if let Some(existing) = profiles
         .iter()
-        .find(|p| identity_key(&p.email, &p.phone).as_deref() == Some(key.as_str()))
+        .find(|p| profile_identity_key(p).as_deref() == Some(key.as_str()))
     {
         return Err(AppError::Msg(format!(
             "账号标识 {} 已存在于账号「{}」，未重复导入。",
@@ -1615,4 +1640,55 @@ pub async fn fetch_quota(id: Option<String>) -> R<crate::quota::QuotaInfo> {
     let text = std::str::from_utf8(&cred_bytes)
         .map_err(|e| AppError::Msg(format!("credentials 不是 UTF-8：{}", e)))?;
     crate::quota::fetch_quota(text).await.map_err(AppError::Msg)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_key_prefers_email_then_phone_then_user_id() {
+        assert_eq!(
+            identity_key("Ada@Example.com", "13800138000", "u1").as_deref(),
+            Some("email:ada@example.com")
+        );
+        assert_eq!(
+            identity_key("", "+86 138-0013-8000", "u1").as_deref(),
+            Some("phone:8613800138000")
+        );
+        assert_eq!(identity_key("", "", "bm-user-001").as_deref(), Some("uid:bm-user-001"));
+        assert_eq!(identity_key("  ", "", "  "), None);
+    }
+
+    #[test]
+    fn identify_save_restore_local_zcode() {
+        let status = current_status().expect("current_status");
+        assert!(status.logged_in, "local ZCode credentials.json missing");
+        assert!(
+            !status.current_username.is_empty()
+                || !status.current_email.is_empty()
+                || !status.current_phone.is_empty(),
+            "failed to identify logged-in ZCode user"
+        );
+
+        let saved = capture_current(String::new()).expect("capture_current");
+        assert!(!saved.name.is_empty(), "saved profile should have a name");
+        assert!(
+            !saved.user_id.is_empty() || !saved.email.is_empty() || !saved.phone.is_empty(),
+            "saved profile missing identity fields"
+        );
+
+        let after_save = current_status().expect("status after save");
+        assert_eq!(after_save.active_profile_id.as_deref(), Some(saved.id.as_str()));
+
+        let restored = switch_to(saved.id.clone()).expect("switch_to");
+        assert_eq!(restored.id, saved.id);
+
+        let after_restore = current_status().expect("status after restore");
+        assert_eq!(
+            after_restore.active_profile_id.as_deref(),
+            Some(saved.id.as_str())
+        );
+        assert_eq!(after_restore.current_username, status.current_username);
+    }
 }

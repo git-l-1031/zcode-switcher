@@ -489,17 +489,17 @@ export default function App() {
   };
 
   /**
-   * OAuth 添加账号: 后端先登记 zcode://oauth/callback 回调，再打开 Z.ai 授权页。
-   * 浏览器授权完成后，系统协议唤回当前应用，后端拿 code 交换 token 并导入成本地 profile。
+   * OAuth 添加账号: 后端先走官方 /oauth/cli/init 登记，再打开服务端授权页。
+   * 浏览器授权完成后由后端 poll CLI 取 token 并导入成本地 profile。
    */
-  const handleOAuthAdd = async () => {
+  const handleOAuthAdd = async (provider: "bigmodel" | "zai" = "bigmodel") => {
     try {
       if (oauthBusyRef.current) return;
       oauthBusyRef.current = true;
 
       // 先登记回调流程，再确认系统浏览器确实接受了授权地址。
       toast(t.oauthPreparing, "info");
-      const init = await api.oauthInit();
+      const init = await api.oauthInit(provider);
       try {
         await openUrl(init.authorize_url);
       } catch (e) {
@@ -1027,9 +1027,9 @@ export default function App() {
             closeDialog();
             handleImportFromFile();
           }}
-          onPickOAuth={() => {
+          onPickOAuth={(provider) => {
             closeDialog();
-            handleOAuthAdd();
+            handleOAuthAdd(provider);
           }}
           onPickProvider={() => setDialog({ kind: "provider" })}
           onClose={closeDialog}

@@ -1,13 +1,11 @@
 //! ZCode OAuth 登录导入。
 //!
-//! 旧的 /oauth/cli/init + /oauth/cli/poll 接口已经不可用。新版 ZCode 客户端
-//! 使用 Z.ai 授权码流程：
-//!   1. 打开 chat.z.ai/api/oauth/authorize
-//!   2. 浏览器通过 zcode://oauth/callback 回调本机应用，拿到 code + state
-//!   3. POST zcode.z.ai/api/v1/oauth/token 交换 ZCode JWT 与 Z.ai access token
-//!   4. POST api.z.ai/api/auth/z/login 把 Z.ai token 换成 ZCode 业务 access token
-//!   5. 组装 portable JSON，复用 profile::import_profile_json 导入账号
+//! 主路径对齐官方 3.11+：POST /oauth/cli/init → 打开服务端 authorize_url
+//! → poll /oauth/cli/poll/{flow_id}。不要把 redirect 改成
+//! `/app/oauth/login?app_version=3.11.2`，该页在未登记 CLI flow 时固定显示
+//! 「授权失败」。CLI 不可用时回退 zcode://oauth/callback + token 交换。
 
+use crate::oauth_cli;
 use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -19,13 +17,43 @@ use std::{
 use tokio::sync::oneshot;
 
 const AUTHORIZE_URL: &str = "https://chat.z.ai/api/oauth/authorize";
+const BIGMODEL_AUTHORIZE_URL: &str = "https://bigmodel.cn/login";
 const TOKEN_URL: &str = "https://zcode.z.ai/api/v1/oauth/token";
 const USERINFO_URL: &str = "https://chat.z.ai/api/oauth/userinfo";
+const BIGMODEL_USERINFO_URL: &str = "https://bigmodel.cn/api/biz/customer/getCustomerInfo";
 const BUSINESS_LOGIN_URL: &str = "https://api.z.ai/api/auth/z/login";
 const CLIENT_ID: &str = "client_P8X5CMWmlaRO9gyO-KSqtg";
+const BIGMODEL_APP_ID: &str = "zcode";
 const CALLBACK_URI: &str = "zcode://oauth/callback";
 const DEFAULT_DEADLINE_SECONDS: u64 = 600;
 const HTTP_TIMEOUT_SECONDS: u64 = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OAuthFamily {
+    Zai,
+    BigModel,
+}
+
+impl OAuthFamily {
+    fn parse(raw: Option<&str>) -> Result<Self, String> {
+        match raw.unwrap_or("bigmodel").trim().to_ascii_lowercase().as_str() {
+            "" | "bigmodel" => Ok(Self::BigModel),
+            "zai" => Ok(Self::Zai),
+            other => Err(format!("不支持的 OAuth 登录平台：{}", other)),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Zai => "zai",
+            Self::BigModel => "bigmodel",
+        }
+    }
+}
+
+fn fallback_redirect_uri() -> &'static str {
+    CALLBACK_URI
+}
 
 #[derive(Debug, Serialize)]
 pub struct OAuthInit {
@@ -35,7 +63,11 @@ pub struct OAuthInit {
 }
 
 struct PendingFlow {
+    family: OAuthFamily,
     state: String,
+    poll_token: String,
+    cli: Option<oauth_cli::CliFlow>,
+    redirect_uri: String,
     receiver: oneshot::Receiver<Result<CallbackData, String>>,
     callback_sender: Arc<Mutex<Option<oneshot::Sender<Result<CallbackData, String>>>>>,
 }
@@ -71,6 +103,8 @@ struct TokenData {
     user: Option<Value>,
     #[serde(default)]
     zai: Option<ZaiTokens>,
+    #[serde(default)]
+    bigmodel: Option<ZaiTokens>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -165,15 +199,29 @@ fn body_preview(body: &str) -> String {
     body.chars().take(300).collect::<String>()
 }
 
-fn build_authorize_url(state: &str) -> Result<String, String> {
-    let mut url =
-        reqwest::Url::parse(AUTHORIZE_URL).map_err(|e| format!("授权地址解析失败:{}", e))?;
-    url.query_pairs_mut()
-        .append_pair("redirect_uri", CALLBACK_URI)
-        .append_pair("response_type", "code")
-        .append_pair("client_id", CLIENT_ID)
-        .append_pair("state", state);
-    Ok(url.to_string())
+fn build_authorize_url(family: OAuthFamily, state: &str) -> Result<String, String> {
+    let redirect = fallback_redirect_uri();
+    match family {
+        OAuthFamily::Zai => {
+            let mut url = reqwest::Url::parse(AUTHORIZE_URL)
+                .map_err(|e| format!("授权地址解析失败:{}", e))?;
+            url.query_pairs_mut()
+                .append_pair("redirect_uri", redirect)
+                .append_pair("response_type", "code")
+                .append_pair("client_id", CLIENT_ID)
+                .append_pair("state", state);
+            Ok(url.to_string())
+        }
+        OAuthFamily::BigModel => {
+            let mut url = reqwest::Url::parse(BIGMODEL_AUTHORIZE_URL)
+                .map_err(|e| format!("授权地址解析失败:{}", e))?;
+            url.query_pairs_mut()
+                .append_pair("redirect", redirect)
+                .append_pair("appId", BIGMODEL_APP_ID)
+                .append_pair("state", state);
+            Ok(url.to_string())
+        }
+    }
 }
 
 fn callback_channel() -> (
@@ -307,16 +355,33 @@ fn cancel_pending_oauth(message: &str) {
     }
 }
 
-/// 初始化新版 Z.ai OAuth 流程。
+/// 初始化 OAuth 流程。`provider` 为 `bigmodel` 或 `zai`，缺省按本机常见的智谱登录。
 ///
-/// 为了兼容前端旧接口字段：
-/// - flow_id = state
-/// - poll_token = 固定回调地址（保留旧字段名以兼容前端）
+/// 优先走官方 CLI init（authorize_url 已指向 cli/callback）。失败时回退
+/// `zcode://oauth/callback`。前端仍复用 flow_id / poll_token 字段。
 #[tauri::command]
-pub async fn oauth_init() -> Result<OAuthInit, String> {
-    let state = random_hex(24);
+pub async fn oauth_init(provider: Option<String>) -> Result<OAuthInit, String> {
+    let family = OAuthFamily::parse(provider.as_deref())?;
     let (callback_sender, receiver) = callback_channel();
-    let authorize_url = build_authorize_url(&state)?;
+    let client = http_client()?;
+    let cli = oauth_cli::start_cli_flow(&client, family.as_str()).await.ok();
+    let (state, poll_token, authorize_url, redirect_uri) = match &cli {
+        Some(flow) => (
+            flow.flow_id.clone(),
+            flow.poll_token.clone(),
+            flow.authorize_url.clone(),
+            fallback_redirect_uri().to_string(),
+        ),
+        None => {
+            let state = random_hex(24);
+            (
+                state.clone(),
+                CALLBACK_URI.to_string(),
+                build_authorize_url(family, &state)?,
+                fallback_redirect_uri().to_string(),
+            )
+        }
+    };
 
     let mut pending = pending_flow()
         .lock()
@@ -335,7 +400,11 @@ pub async fn oauth_init() -> Result<OAuthInit, String> {
         sender: callback_sender.clone(),
     });
     *pending = Some(PendingFlow {
+        family,
         state: state.clone(),
+        poll_token: poll_token.clone(),
+        cli,
+        redirect_uri,
         receiver,
         callback_sender,
     });
@@ -343,7 +412,7 @@ pub async fn oauth_init() -> Result<OAuthInit, String> {
     Ok(OAuthInit {
         flow_id: state,
         authorize_url,
-        poll_token: CALLBACK_URI.to_string(),
+        poll_token,
     })
 }
 
@@ -359,7 +428,7 @@ pub async fn oauth_acquire_and_import(
             .lock()
             .map_err(|_| "OAuth 流程状态锁定失败".to_string())?;
         match guard.take() {
-            Some(flow) if flow.state == flow_id && poll_token == CALLBACK_URI => flow,
+            Some(flow) if flow.state == flow_id && flow.poll_token == poll_token => flow,
             Some(flow) => {
                 *guard = Some(flow);
                 return Err("OAuth 流程不匹配，请重新发起登录".into());
@@ -379,16 +448,84 @@ pub fn oauth_cancel() {
     cancel_pending_oauth("OAuth 登录流程已取消，请重新发起登录");
 }
 
+async fn acquire_via_cli(
+    client: &Client,
+    family: OAuthFamily,
+    cli: oauth_cli::CliFlow,
+    mut receiver: oneshot::Receiver<Result<CallbackData, String>>,
+    deadline: Duration,
+) -> Result<crate::profile::Profile, String> {
+    let started = tokio::time::Instant::now();
+    loop {
+        if started.elapsed() >= deadline {
+            return Err("等待 OAuth 登录超时".into());
+        }
+        let poll_fut = oauth_cli::poll_cli_once(client, &cli, family.as_str());
+        tokio::select! {
+            cb = &mut receiver => {
+                match cb {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => return Err("OAuth 回调通道已关闭，请重新发起登录".into()),
+                }
+            }
+            poll = poll_fut => {
+                match poll? {
+                    oauth_cli::CliPollStatus::Pending => {
+                        let sleep_for = cli.poll_interval.min(deadline.saturating_sub(started.elapsed()));
+                        tokio::select! {
+                            cb = &mut receiver => {
+                                match cb {
+                                    Ok(Ok(_)) => {}
+                                    Ok(Err(e)) => return Err(e),
+                                    Err(_) => return Err("OAuth 回调通道已关闭，请重新发起登录".into()),
+                                }
+                            }
+                            _ = tokio::time::sleep(sleep_for) => {}
+                        }
+                    }
+                    oauth_cli::CliPollStatus::Failed(e) => return Err(e),
+                    oauth_cli::CliPollStatus::Ready(ready) => {
+                        let mut user = ready.user;
+                        if !has_meaningful_user(&user) {
+                            if let Some(fetched) =
+                                fetch_user_info(client, family, &ready.access_token).await
+                            {
+                                user = fetched;
+                            }
+                        }
+                        return import_from_token_set(
+                            family,
+                            ready.zcode_jwt,
+                            ready.access_token,
+                            ready.refresh_token,
+                            user,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn acquire_with_pending(
     pending: PendingFlow,
     deadline_seconds: Option<u64>,
 ) -> Result<crate::profile::Profile, String> {
     let PendingFlow {
+        family,
         state,
+        poll_token: _,
+        cli,
+        redirect_uri,
         receiver,
         callback_sender: _,
     } = pending;
     let deadline = Duration::from_secs(deadline_seconds.unwrap_or(DEFAULT_DEADLINE_SECONDS));
+    let client = http_client()?;
+    if let Some(cli) = cli {
+        return acquire_via_cli(&client, family, cli, receiver, deadline).await;
+    }
     let callback = match tokio::time::timeout(deadline, receiver).await {
         Ok(Ok(Ok(callback))) => callback,
         Ok(Ok(Err(e))) => return Err(e),
@@ -400,8 +537,7 @@ async fn acquire_with_pending(
         return Err("OAuth state 校验失败，请重新发起登录".into());
     }
 
-    let client = http_client()?;
-    let token_data = exchange_oauth_token(&client, &callback.code, &state).await?;
+    let token_data = exchange_oauth_token(&client, family, &callback.code, &state, &redirect_uri).await?;
     let zcode_jwt = token_data
         .token
         .as_deref()
@@ -411,40 +547,52 @@ async fn acquire_with_pending(
     if zcode_jwt.is_empty() {
         return Err("Token 交换失败:响应缺少 data.token".into());
     }
-    let zai_tokens = token_data.zai.unwrap_or_default();
-    let zai_access_token = zai_tokens.access_token();
-    if zai_access_token.is_empty() {
-        return Err("Token 交换失败:响应缺少 data.zai.access_token".into());
-    }
-    let business_access_token = exchange_business_token(&client, &zai_access_token).await?;
+    let (access_token, refresh_token) = match family {
+        OAuthFamily::Zai => {
+            let zai_tokens = token_data.zai.unwrap_or_default();
+            let zai_access_token = zai_tokens.access_token();
+            if zai_access_token.is_empty() {
+                return Err("Token 交换失败:响应缺少 data.zai.access_token".into());
+            }
+            (
+                exchange_business_token(&client, &zai_access_token).await?,
+                zai_tokens.refresh_token(),
+            )
+        }
+        OAuthFamily::BigModel => {
+            let bm_tokens = token_data.bigmodel.unwrap_or_default();
+            let access_token = bm_tokens.access_token();
+            if access_token.is_empty() {
+                return Err("Token 交换失败:响应缺少 data.bigmodel.access_token".into());
+            }
+            (access_token, bm_tokens.refresh_token())
+        }
+    };
     let mut user = token_data
         .user
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
     if !has_meaningful_user(&user) {
-        if let Some(fetched) = fetch_user_info(&client, &business_access_token).await {
+        if let Some(fetched) = fetch_user_info(&client, family, &access_token).await {
             user = fetched;
         }
     }
 
-    import_from_token_set(
-        zcode_jwt,
-        business_access_token,
-        zai_tokens.refresh_token(),
-        user,
-    )
+    import_from_token_set(family, zcode_jwt, access_token, refresh_token, user)
 }
 
 async fn exchange_oauth_token(
     client: &Client,
+    family: OAuthFamily,
     code: &str,
     state: &str,
+    redirect_uri: &str,
 ) -> Result<TokenData, String> {
     let resp = client
         .post(TOKEN_URL)
         .json(&serde_json::json!({
-            "provider": "zai",
+            "provider": family.as_str(),
             "code": code,
-            "redirect_uri": CALLBACK_URI,
+            "redirect_uri": redirect_uri,
             "state": state,
         }))
         .send()
@@ -516,10 +664,18 @@ async fn exchange_business_token(
     Ok(token)
 }
 
-async fn fetch_user_info(client: &Client, business_access_token: &str) -> Option<Value> {
-    let resp = client
-        .get(USERINFO_URL)
-        .bearer_auth(business_access_token)
+async fn fetch_user_info(
+    client: &Client,
+    family: OAuthFamily,
+    access_token: &str,
+) -> Option<Value> {
+    let request = match family {
+        OAuthFamily::Zai => client.get(USERINFO_URL).bearer_auth(access_token),
+        OAuthFamily::BigModel => client
+            .get(BIGMODEL_USERINFO_URL)
+            .header("Authorization", access_token),
+    };
+    let resp = request
         .header("Content-Type", "application/json")
         .send()
         .await
@@ -562,6 +718,7 @@ fn pick(user: &Value, keys: &[&str]) -> String {
 }
 
 fn import_from_token_set(
+    family: OAuthFamily,
     zcode_jwt: String,
     business_access_token: String,
     refresh_token: String,
@@ -589,27 +746,32 @@ fn import_from_token_set(
         "phone_number": phone,
         "name": name,
         "avatar": avatar,
+        "avatarUrl": avatar,
         "user_id": user_id,
+        "id": user_id,
+        "username": name,
+        "displayName": name,
     }))
     .map_err(|e| format!("user_info 序列化失败:{}", e))?;
 
+    let family_name = family.as_str();
     let mut credentials = serde_json::Map::new();
     credentials.insert(
         "oauth:active_provider".to_string(),
-        Value::String("zai".into()),
+        Value::String(family_name.into()),
     );
     credentials.insert(
-        "oauth:zai:user_info".to_string(),
+        format!("oauth:{family_name}:user_info"),
         Value::String(user_info_json),
     );
     credentials.insert("zcodejwttoken".to_string(), Value::String(zcode_jwt));
     credentials.insert(
-        "oauth:zai:access_token".to_string(),
+        format!("oauth:{family_name}:access_token"),
         Value::String(business_access_token),
     );
     if !refresh_token.is_empty() {
         credentials.insert(
-            "oauth:zai:refresh_token".to_string(),
+            format!("oauth:{family_name}:refresh_token"),
             Value::String(refresh_token),
         );
     }
@@ -635,7 +797,7 @@ fn import_from_token_set(
             "avatar": avatar,
         },
         "credentials": Value::Object(credentials),
-        "family": "zai",
+        "family": family_name,
         "mode": "oauth",
         "provider_api_keys": {},
     });
@@ -651,14 +813,37 @@ mod tests {
 
     #[test]
     fn authorize_url_uses_registered_callback() {
-        let url = build_authorize_url("state-123").expect("authorize URL should build");
+        let url = build_authorize_url(OAuthFamily::Zai, "state-123")
+            .expect("authorize URL should build");
         let parsed = reqwest::Url::parse(&url).expect("authorize URL should parse");
         let params: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
 
-        assert_eq!(params.get("redirect_uri"), Some(&CALLBACK_URI.to_string()));
+        assert_eq!(
+            params.get("redirect_uri").map(String::as_str),
+            Some(CALLBACK_URI)
+        );
+        assert!(!url.contains("/app/oauth/login"));
         assert_eq!(params.get("state"), Some(&"state-123".to_string()));
         assert_eq!(params.get("response_type"), Some(&"code".to_string()));
         assert_eq!(params.get("client_id"), Some(&CLIENT_ID.to_string()));
+    }
+
+    #[test]
+    fn bigmodel_authorize_url_uses_official_login_params() {
+        let url = build_authorize_url(OAuthFamily::BigModel, "state-456")
+            .expect("authorize URL should build");
+        let parsed = reqwest::Url::parse(&url).expect("authorize URL should parse");
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(parsed.as_str().split('?').next(), Some(BIGMODEL_AUTHORIZE_URL));
+        assert_eq!(params.get("appId"), Some(&BIGMODEL_APP_ID.to_string()));
+        assert_eq!(params.get("state"), Some(&"state-456".to_string()));
+        assert_eq!(
+            params.get("redirect").map(String::as_str),
+            Some(CALLBACK_URI)
+        );
+        assert!(!url.contains("/app/oauth/login"));
+        assert!(!params.contains_key("client_id"));
+        assert!(!params.contains_key("redirect_uri"));
     }
 
     #[test]

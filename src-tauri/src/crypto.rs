@@ -24,7 +24,7 @@ const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const SECRET_ENV: &str = "ZCODE_CREDENTIAL_SECRET";
 
-/// 解出的 user_info（来自 oauth:zai:user_info）。
+/// 解出的 user_info（来自 oauth:{family}:user_info，zai / bigmodel 字段不统一）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct UserInfo {
     #[allow(dead_code)]
@@ -171,14 +171,143 @@ fn b64url(s: &str) -> Result<Vec<u8>, String> {
 }
 
 /// 从 credentials.json 的明文 map 里解出 user_info。
+/// 先读 `oauth:active_provider` 对应 family，再回退 zai / bigmodel。
 pub fn extract_user_info(creds: &serde_json::Value) -> Option<UserInfo> {
-    let raw = creds.get("oauth:zai:user_info").and_then(|v| v.as_str())?;
+    for key in user_info_keys(creds) {
+        if let Some(info) = user_info_from_key(creds, &key) {
+            return Some(info);
+        }
+    }
+    None
+}
+
+fn user_info_keys(creds: &serde_json::Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(raw) = creds.get("oauth:active_provider").and_then(|v| v.as_str()) {
+        if let Ok(family) = decrypt(raw) {
+            let family = family.trim();
+            if family == "zai" || family == "bigmodel" {
+                keys.push(format!("oauth:{family}:user_info"));
+            }
+        }
+    }
+    for key in ["oauth:zai:user_info", "oauth:bigmodel:user_info"] {
+        if !keys.iter().any(|existing| existing == key) {
+            keys.push(key.to_string());
+        }
+    }
+    keys
+}
+
+fn user_info_from_key(creds: &serde_json::Value, key: &str) -> Option<UserInfo> {
+    let raw = creds.get(key)?.as_str()?;
     let dec = decrypt(raw).ok()?;
-    serde_json::from_str::<UserInfo>(&dec).ok()
+    parse_user_info_json(&dec)
+}
+
+fn parse_user_info_json(dec: &str) -> Option<UserInfo> {
+    let value: serde_json::Value = serde_json::from_str(dec).ok()?;
+    let nested = value.get("rawProfile");
+    let name = pick_str(&value, &["name", "displayName", "username", "nickName"]).or_else(|| {
+        nested.and_then(|item| pick_str(item, &["name", "displayName", "username"]))
+    });
+    let email = pick_str(&value, &["email"])
+        .or_else(|| nested.and_then(|item| pick_str(item, &["email"])));
+    let phone = pick_str(
+        &value,
+        &["phone", "phone_number", "mobile", "mobile_phone"],
+    )
+    .or_else(|| nested.and_then(|item| pick_str(item, &["phone", "phone_number", "mobile"])));
+    let avatar = pick_str(&value, &["avatar", "avatarUrl", "picture"]);
+    let user_id = pick_str(&value, &["user_id", "userId", "id", "sub"]);
+    if name.is_none() && email.is_none() && phone.is_none() && user_id.is_none() {
+        return None;
+    }
+    Some(UserInfo {
+        user_id,
+        email,
+        phone: phone.clone(),
+        phone_number: phone,
+        mobile: None,
+        mobile_phone: None,
+        avatar,
+        name,
+    })
+}
+
+fn pick_str(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(text) = value.get(*key).and_then(|item| item.as_str()) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// 从 credentials.json 里解出 zcodejwttoken（用于调用 billing 接口）。
 pub fn extract_jwt_token(creds: &serde_json::Value) -> Option<String> {
     let raw = creds.get("zcodejwttoken").and_then(|v| v.as_str())?;
     decrypt(raw).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn enc_creds(pairs: &[(&str, &str)]) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for (key, plain) in pairs {
+            map.insert((*key).to_string(), json!(encrypt(plain).expect("encrypt")));
+        }
+        serde_json::Value::Object(map)
+    }
+
+    #[test]
+    fn extract_user_info_reads_zai_email_shape() {
+        let creds = enc_creds(&[(
+            "oauth:zai:user_info",
+            r#"{"name":"Ada","email":"ada@example.com","user_id":"u-zai"}"#,
+        )]);
+        let info = extract_user_info(&creds).expect("zai user_info");
+        assert_eq!(info.name.as_deref(), Some("Ada"));
+        assert_eq!(info.email.as_deref(), Some("ada@example.com"));
+        assert_eq!(info.user_id.as_deref(), Some("u-zai"));
+    }
+
+    #[test]
+    fn extract_user_info_reads_bigmodel_display_name_shape() {
+        let creds = enc_creds(&[
+            ("oauth:active_provider", "bigmodel"),
+            (
+                "oauth:bigmodel:user_info",
+                r#"{"id":"bm-user-001","username":"short","displayName":"展示名","rawProfile":{}}"#,
+            ),
+        ]);
+        let info = extract_user_info(&creds).expect("bigmodel user_info");
+        assert_eq!(info.name.as_deref(), Some("展示名"));
+        assert_eq!(info.user_id.as_deref(), Some("bm-user-001"));
+        assert!(info.email.as_deref().unwrap_or("").is_empty());
+    }
+
+    #[test]
+    fn extract_user_info_prefers_active_provider_family() {
+        let creds = enc_creds(&[
+            ("oauth:active_provider", "bigmodel"),
+            (
+                "oauth:zai:user_info",
+                r#"{"name":"ZaiUser","email":"zai@example.com","user_id":"z1"}"#,
+            ),
+            (
+                "oauth:bigmodel:user_info",
+                r#"{"id":"bm-2","displayName":"BigUser"}"#,
+            ),
+        ]);
+        let info = extract_user_info(&creds).expect("active family");
+        assert_eq!(info.name.as_deref(), Some("BigUser"));
+        assert_eq!(info.user_id.as_deref(), Some("bm-2"));
+    }
 }

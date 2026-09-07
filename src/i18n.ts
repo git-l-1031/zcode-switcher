@@ -294,7 +294,7 @@ const zh = {
 
   oauthAddTitle: "OAuth 登录添加账号",
   oauthPreparing: "正在请求 OAuth 授权…",
-  oauthOpening: "已打开浏览器，请登录 Z.ai 并点击「同意」",
+  oauthOpening: "已打开浏览器，请在对应平台登录并授权",
   oauthAdded: "已通过 OAuth 添加账号「{name}」",
   oauthFailed: "OAuth 添加失败：{error}",
 
@@ -303,7 +303,11 @@ const zh = {
   importChoiceFromFile: "从 JSON / ZIP 文件",
   importChoiceFromFileDesc: "导入之前导出的账号备份文件",
   importChoiceOAuth: "OAuth 登录添加",
-  importChoiceOAuthDesc: "用浏览器登录 Z.ai，自动捕获 token",
+  importChoiceOAuthDesc: "用浏览器登录智谱或 Z.ai，自动捕获 token",
+  importChoiceOAuthBigModel: "智谱 BigModel 登录",
+  importChoiceOAuthBigModelDesc: "打开 bigmodel.cn，用智谱账号授权",
+  importChoiceOAuthZai: "Z.ai 登录",
+  importChoiceOAuthZaiDesc: "打开 Z.ai 授权页，用 Z.ai 账号授权",
   importChoiceProvider: "API Key 服务商",
   importChoiceProviderDesc: "添加兼容 Anthropic / OpenAI 的自定义服务商",
 };
@@ -598,7 +602,7 @@ const en: Texts = {
 
   oauthAddTitle: "Add account via OAuth login",
   oauthPreparing: "Requesting OAuth authorization…",
-  oauthOpening: "Opened browser. Please sign in to Z.ai and click \"Authorize\".",
+  oauthOpening: "Opened browser. Sign in on the matching platform and authorize.",
   oauthAdded: "Added account \"{name}\" via OAuth",
   oauthFailed: "OAuth add failed: {error}",
 
@@ -607,7 +611,11 @@ const en: Texts = {
   importChoiceFromFile: "From JSON / ZIP file",
   importChoiceFromFileDesc: "Restore an account from a previously exported backup",
   importChoiceOAuth: "OAuth login",
-  importChoiceOAuthDesc: "Sign in to Z.ai in the browser and capture the token automatically",
+  importChoiceOAuthDesc: "Sign in with BigModel or Z.ai and capture the token automatically",
+  importChoiceOAuthBigModel: "BigModel login",
+  importChoiceOAuthBigModelDesc: "Open bigmodel.cn and authorize with your Zhipu account",
+  importChoiceOAuthZai: "Z.ai login",
+  importChoiceOAuthZaiDesc: "Open the Z.ai authorize page and sign in with a Z.ai account",
   importChoiceProvider: "API key provider",
   importChoiceProviderDesc: "Add a custom Anthropic / OpenAI compatible provider",
 };
@@ -900,7 +908,7 @@ const ru: Texts = {
 
   oauthAddTitle: "Добавить аккаунт через OAuth",
   oauthPreparing: "Запрос OAuth-авторизации…",
-  oauthOpening: "Браузер открыт. Войдите в Z.ai и нажмите \"Авторизовать\".",
+  oauthOpening: "Браузер открыт. Войдите на соответствующей платформе и подтвердите доступ.",
   oauthAdded: "Аккаунт \"{name}\" добавлен через OAuth",
   oauthFailed: "Ошибка добавления через OAuth: {error}",
 
@@ -909,7 +917,11 @@ const ru: Texts = {
   importChoiceFromFile: "Из JSON / ZIP-файла",
   importChoiceFromFileDesc: "Восстановить аккаунт из ранее экспортированного бэкапа",
   importChoiceOAuth: "Войти через OAuth",
-  importChoiceOAuthDesc: "Войти в Z.ai в браузере и автоматически захватить токен",
+  importChoiceOAuthDesc: "Войти через BigModel или Z.ai и автоматически захватить токен",
+  importChoiceOAuthBigModel: "Вход BigModel",
+  importChoiceOAuthBigModelDesc: "Открыть bigmodel.cn и авторизоваться аккаунтом Zhipu",
+  importChoiceOAuthZai: "Вход Z.ai",
+  importChoiceOAuthZaiDesc: "Открыть страницу авторизации Z.ai",
   importChoiceProvider: "API key провайдер",
   importChoiceProviderDesc: "Добавить Anthropic / OpenAI совместимого провайдера",
 };

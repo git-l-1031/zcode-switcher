@@ -3,6 +3,7 @@ mod crypto;
 mod custom_provider;
 mod jwt;
 mod oauth;
+mod oauth_cli;
 mod profile;
 mod proxy;
 mod proxy_pool;

@@ -55,7 +55,7 @@ export interface BatchImportReport {
   messages: string[];
 }
 
-/** OAuth 初始化响应:authorize_url 使用固定 zcode://oauth/callback, pollToken 保留兼容字段 */
+/** OAuth 初始化响应: authorize_url 来自官方 CLI init，poll_token 用于轮询 */
 export interface OAuthInit {
   flow_id: string;
   authorize_url: string;
@@ -140,7 +140,8 @@ export const api = {
     cmd<RefreshZcodeAppServerReport>("refresh_zcode_app_server"),
   restartZcode: () => cmd<void>("restart_zcode"),
   killZcodeForSwitch: () => cmd<void>("kill_zcode_for_switch"),
-  oauthInit: () => cmd<OAuthInit>("oauth_init"),
+  oauthInit: (provider?: "bigmodel" | "zai") =>
+    cmd<OAuthInit>("oauth_init", { provider: provider ?? "bigmodel" }),
   oauthAcquireAndImport: (flowId: string, pollToken: string, deadlineSeconds?: number) =>
     cmd<{ id: string; name: string; email: string; phone: string; avatar: string }>(
       "oauth_acquire_and_import",

@@ -1091,8 +1091,7 @@ function Backdrop({
 }
 
 /**
- * 导入方式选择面板:两张并排卡片,一张「从 JSON / ZIP 文件」,一张「OAuth 登录添加」。
- * 点哪张回调对应的 handler,父组件再去开文件选择或启动 OAuth 流程。
+ * 导入方式选择面板:文件备份 + BigModel / Z.ai 两套官方 OAuth。
  */
 export function ImportChoiceModal({
   language,
@@ -1105,7 +1104,7 @@ export function ImportChoiceModal({
   language: Language;
   showProvider?: boolean;
   onPickFile: () => void;
-  onPickOAuth: () => void;
+  onPickOAuth: (provider: "bigmodel" | "zai") => void;
   onPickProvider: () => void;
   onClose: () => void;
 }) {
@@ -1121,13 +1120,13 @@ export function ImportChoiceModal({
   return (
     <Backdrop onClose={onClose}>
       <div
-        className="modal-in w-[480px] rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
+        className="modal-in w-[640px] rounded-2xl border border-base-border bg-base-bg p-6 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="text-lg font-bold text-text-primary">{t.importChoiceTitle}</h2>
         <p className="mt-1 text-xs text-text-secondary">{t.importChoiceSubtitle}</p>
 
-        <div className={`mt-5 grid gap-3 ${showProvider ? "grid-cols-3" : "grid-cols-2"}`}>
+        <div className={`mt-5 grid gap-3 ${showProvider ? "grid-cols-4" : "grid-cols-3"}`}>
           <button
             onClick={onPickFile}
             className="focus-ring group flex flex-col items-start gap-2 rounded-xl border-2 border-base-border bg-base-card p-4 text-left transition hover:border-accent hover:bg-accent-soft active:scale-[0.98]"
@@ -1142,15 +1141,28 @@ export function ImportChoiceModal({
           </button>
 
           <button
-            onClick={onPickOAuth}
+            onClick={() => onPickOAuth("bigmodel")}
             className="focus-ring group flex flex-col items-start gap-2 rounded-xl border-2 border-base-border bg-base-card p-4 text-left transition hover:border-accent hover:bg-accent-soft active:scale-[0.98]"
           >
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-base-cardhover text-text-secondary group-hover:bg-accent group-hover:text-white transition">
               <KeyRound size={18} />
             </div>
-            <div className="text-sm font-bold text-text-primary">{t.importChoiceOAuth}</div>
+            <div className="text-sm font-bold text-text-primary">{t.importChoiceOAuthBigModel}</div>
             <div className="text-xs leading-relaxed text-text-muted">
-              {t.importChoiceOAuthDesc}
+              {t.importChoiceOAuthBigModelDesc}
+            </div>
+          </button>
+
+          <button
+            onClick={() => onPickOAuth("zai")}
+            className="focus-ring group flex flex-col items-start gap-2 rounded-xl border-2 border-base-border bg-base-card p-4 text-left transition hover:border-accent hover:bg-accent-soft active:scale-[0.98]"
+          >
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-base-cardhover text-text-secondary group-hover:bg-accent group-hover:text-white transition">
+              <KeyRound size={18} />
+            </div>
+            <div className="text-sm font-bold text-text-primary">{t.importChoiceOAuthZai}</div>
+            <div className="text-xs leading-relaxed text-text-muted">
+              {t.importChoiceOAuthZaiDesc}
             </div>
           </button>
 
