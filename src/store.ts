@@ -9,7 +9,7 @@ import {
   type ProxyStatus,
   type QuotaInfo,
 } from "./lib/api";
-import { glm52Remaining } from "./lib/glm52";
+import { modelRemaining } from "./lib/modelQuota";
 import { primaryQuotaRemaining } from "./lib/quotaSort";
 import { getTexts, type Language } from "./i18n";
 
@@ -26,9 +26,11 @@ const DEFAULT_ACCOUNT_SORT_MODE: AccountSortMode = "name-asc";
 
 const FLOATING_WINDOW_STORAGE_KEY = "zcs:floatingWindowMode";
 
-const GLM52_THRESHOLD_WAN_MIN = 10;
-const GLM52_THRESHOLD_WAN_MAX = 100;
-const GLM52_DEFAULT_THRESHOLD_WAN = 35;
+const AUTO_SWITCH_THRESHOLD_WAN_MIN = 0.01;
+const AUTO_SWITCH_THRESHOLD_WAN_MAX = Number.MAX_SAFE_INTEGER / 10_000;
+const AUTO_SWITCH_DEFAULT_THRESHOLD_WAN = 35;
+const AUTO_SWITCH_MODEL_KEY = "zcs:autoSwitchModel";
+const DEFAULT_AUTO_SWITCH_MODEL = "GLM-5.2";
 const DEFAULT_QUOTA_REFRESH_INTERVAL_MINUTES = 10;
 const DEFAULT_ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES = 1;
 const ACTIVE_QUOTA_REFRESH_INTERVAL_MINUTES_KEY = "zcs:activeQuotaRefreshIntervalMinutes";
@@ -59,9 +61,10 @@ interface AppState {
   activeQuotaRefreshIntervalMinutes: number;
   /** 用来重置定时器倒计时的 tick */
   scheduledRefreshSeq: number;
-  glm52AutoSwitchEnabled: boolean;
+  autoSwitchEnabled: boolean;
+  autoSwitchModel: string;
   /** 自动切换阈值，单位：万 */
-  glm52AutoSwitchThresholdWan: number;
+  autoSwitchThresholdWan: number;
   autoRestart: boolean;
   tryNoRestartSwitch: boolean;
   theme: Theme;
@@ -100,8 +103,9 @@ interface AppState {
   setAutoRefreshQuota: (v: boolean) => void;
   setQuotaRefreshIntervalMinutes: (v: number) => void;
   setActiveQuotaRefreshIntervalMinutes: (v: number) => void;
-  setGlm52AutoSwitchEnabled: (v: boolean) => void;
-  setGlm52AutoSwitchThresholdWan: (v: number) => void;
+  setAutoSwitchEnabled: (v: boolean) => void;
+  setAutoSwitchModel: (model: string) => void;
+  setAutoSwitchThresholdWan: (v: number) => void;
   setAutoRestart: (v: boolean) => void;
   setTryNoRestartSwitch: (v: boolean) => void;
   setTheme: (v: Theme) => void;
@@ -139,8 +143,8 @@ interface AppState {
 }
 
 let toastSeq = 1;
-let glm52AutoSwitching = false;
-let lastGlm52NoCandidateAt = 0;
+let autoSwitching = false;
+let lastNoCandidateAt = 0;
 
 let refreshAllInFlight = false;
 
@@ -238,24 +242,31 @@ function loadQuotaRefreshIntervalMinutes(): number {
     return DEFAULT_QUOTA_REFRESH_INTERVAL_MINUTES;
   }
 }
-function loadGlm52AutoSwitchEnabled(): boolean {
+function loadAutoSwitchEnabled(): boolean {
   try {
     return localStorage.getItem("zcs:glm52AutoSwitchEnabled") === "1";
   } catch {
     return false;
   }
 }
-function clampGlm52ThresholdWan(n: number): number {
-  return Math.max(GLM52_THRESHOLD_WAN_MIN, Math.min(GLM52_THRESHOLD_WAN_MAX, Math.round(n)));
+function clampAutoSwitchThresholdWan(n: number): number {
+  return Math.max(AUTO_SWITCH_THRESHOLD_WAN_MIN, Math.min(AUTO_SWITCH_THRESHOLD_WAN_MAX, Math.round(n * 100) / 100));
 }
-function loadGlm52AutoSwitchThresholdWan(): number {
+function loadAutoSwitchModel(): string {
+  try {
+    return localStorage.getItem(AUTO_SWITCH_MODEL_KEY)?.trim() || DEFAULT_AUTO_SWITCH_MODEL;
+  } catch {
+    return DEFAULT_AUTO_SWITCH_MODEL;
+  }
+}
+function loadAutoSwitchThresholdWan(): number {
   try {
     const n = Number(localStorage.getItem("zcs:glm52AutoSwitchThresholdWan"));
     return Number.isFinite(n) && n > 0
-      ? clampGlm52ThresholdWan(n)
-      : GLM52_DEFAULT_THRESHOLD_WAN;
+      ? clampAutoSwitchThresholdWan(n)
+      : AUTO_SWITCH_DEFAULT_THRESHOLD_WAN;
   } catch {
-    return GLM52_DEFAULT_THRESHOLD_WAN;
+    return AUTO_SWITCH_DEFAULT_THRESHOLD_WAN;
   }
 }
 function loadTheme(): Theme {
@@ -403,16 +414,16 @@ function applyTheme(theme: Theme) {
     });
 }
 
-async function maybeSwitchGlm52Account(state: AppState) {
+async function maybeSwitchAccount(state: AppState) {
   const t = getTexts(state.language);
-  if (!state.glm52AutoSwitchEnabled || glm52AutoSwitching || state.busy) return;
+  if (!state.autoSwitchEnabled || autoSwitching || state.busy) return;
 
   const active = state.profiles.find((p) => p.active);
   const activeQuota = active ? state.quotas[active.id] : undefined;
   if (!active || !activeQuota || activeQuota.error) return;
 
-  const activeRemaining = glm52Remaining(activeQuota);
-  const threshold = state.glm52AutoSwitchThresholdWan * 10_000;
+  const activeRemaining = modelRemaining(activeQuota, state.autoSwitchModel);
+  const threshold = state.autoSwitchThresholdWan * 10_000;
   if (activeRemaining === null || activeRemaining >= threshold) return;
 
   const candidate = state.profiles
@@ -420,7 +431,7 @@ async function maybeSwitchGlm52Account(state: AppState) {
     .map((profile) => ({
       profile,
       quota: state.quotas[profile.id],
-      remaining: glm52Remaining(state.quotas[profile.id]),
+      remaining: modelRemaining(state.quotas[profile.id], state.autoSwitchModel),
     }))
     .filter(
       (item) =>
@@ -432,12 +443,12 @@ async function maybeSwitchGlm52Account(state: AppState) {
 
   if (!candidate) {
     const now = Date.now();
-    if (now - lastGlm52NoCandidateAt > 60_000) {
-      lastGlm52NoCandidateAt = now;
+    if (now - lastNoCandidateAt > 60_000) {
+      lastNoCandidateAt = now;
       state.toast(
-        t.glmNoCandidate.replace(
+        t.glmNoCandidate.replace("{model}", state.autoSwitchModel).replace(
           "{threshold}",
-          String(state.glm52AutoSwitchThresholdWan)
+          String(state.autoSwitchThresholdWan)
         ),
         "warn"
       );
@@ -445,17 +456,18 @@ async function maybeSwitchGlm52Account(state: AppState) {
     return;
   }
 
-  glm52AutoSwitching = true;
+  autoSwitching = true;
   try {
     state.toast(
       t.glmAutoSwitching
-        .replace("{threshold}", String(state.glm52AutoSwitchThresholdWan))
+        .replace("{model}", state.autoSwitchModel)
+        .replace("{threshold}", String(state.autoSwitchThresholdWan))
         .replace("{name}", candidate.profile.name),
       "info"
     );
     await state.switchTo(candidate.profile.id);
   } finally {
-    glm52AutoSwitching = false;
+    autoSwitching = false;
   }
 }
 
@@ -492,8 +504,9 @@ export const useStore = create<AppState>((set, get) => {
     quotaRefreshIntervalMinutes: loadQuotaRefreshIntervalMinutes(),
     activeQuotaRefreshIntervalMinutes: loadActiveQuotaRefreshIntervalMinutes(),
     scheduledRefreshSeq: 0,
-    glm52AutoSwitchEnabled: loadGlm52AutoSwitchEnabled(),
-    glm52AutoSwitchThresholdWan: loadGlm52AutoSwitchThresholdWan(),
+    autoSwitchEnabled: loadAutoSwitchEnabled(),
+    autoSwitchModel: loadAutoSwitchModel(),
+    autoSwitchThresholdWan: loadAutoSwitchThresholdWan(),
     autoRestart: initialAutoRestart,
     tryNoRestartSwitch: initialTryNoRestartSwitch,
     theme: initialTheme,
@@ -763,7 +776,7 @@ export const useStore = create<AppState>((set, get) => {
       for (const p of ordered) {
         await refreshQuota(p.id);
       }
-      await maybeSwitchGlm52Account(get());
+      await maybeSwitchAccount(get());
     } finally {
       refreshAllInFlight = false;
       set((s) => ({ scheduledRefreshSeq: s.scheduledRefreshSeq + 1 }));
@@ -794,7 +807,7 @@ export const useStore = create<AppState>((set, get) => {
         if (tryNoRestartSwitch && p.active) continue;
         await refreshQuota(p.id);
       }
-      await maybeSwitchGlm52Account(get());
+      await maybeSwitchAccount(get());
     } finally {
       refreshAllInFlight = false;
     }
@@ -804,7 +817,7 @@ export const useStore = create<AppState>((set, get) => {
     const active = get().profiles.find((p) => p.active);
     if (!active) return;
     await get().refreshQuota(active.id);
-    await maybeSwitchGlm52Account(get());
+    await maybeSwitchAccount(get());
   },
 
   setAutoRefreshQuota: (v) => {
@@ -836,26 +849,38 @@ export const useStore = create<AppState>((set, get) => {
     set({ activeQuotaRefreshIntervalMinutes: minutes });
   },
 
-  setGlm52AutoSwitchEnabled: (v) => {
+  setAutoSwitchEnabled: (v) => {
     try {
       localStorage.setItem("zcs:glm52AutoSwitchEnabled", v ? "1" : "0");
     } catch {
       /* ignore */
     }
-    set({ glm52AutoSwitchEnabled: v });
+    set({ autoSwitchEnabled: v });
   },
 
-  setGlm52AutoSwitchThresholdWan: (v) => {
+  setAutoSwitchModel: (model) => {
+    const value = model.trim();
+    if (!value) return;
+    try {
+      localStorage.setItem(AUTO_SWITCH_MODEL_KEY, value);
+    } catch {
+      /* ignore */
+    }
+    lastNoCandidateAt = 0;
+    set({ autoSwitchModel: value });
+  },
+
+  setAutoSwitchThresholdWan: (v) => {
     const wan =
       Number.isFinite(v) && v > 0
-        ? clampGlm52ThresholdWan(v)
-        : GLM52_DEFAULT_THRESHOLD_WAN;
+        ? clampAutoSwitchThresholdWan(v)
+        : AUTO_SWITCH_DEFAULT_THRESHOLD_WAN;
     try {
       localStorage.setItem("zcs:glm52AutoSwitchThresholdWan", String(wan));
     } catch {
       /* ignore */
     }
-    set({ glm52AutoSwitchThresholdWan: wan });
+    set({ autoSwitchThresholdWan: wan });
   },
 
   setAutoRestart: (v) => {

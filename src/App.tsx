@@ -92,8 +92,9 @@ export default function App() {
     language,
     quotaRefreshIntervalMinutes,
     activeQuotaRefreshIntervalMinutes,
-    glm52AutoSwitchEnabled,
-    glm52AutoSwitchThresholdWan,
+    autoSwitchEnabled,
+    autoSwitchModel,
+    autoSwitchThresholdWan,
     floatingWindowMode,
     floatingWindowScale,
     theme,
@@ -284,7 +285,7 @@ export default function App() {
 
   useEffect(() => {
     if (!activeProfile) return;
-    const intervalMs = glm52AutoSwitchEnabled
+    const intervalMs = autoSwitchEnabled
       ? 20 * 1000
       : activeQuotaRefreshIntervalMinutes * 60 * 1000;
     activeQuotaRefreshDueAt.current = Date.now() + intervalMs;
@@ -296,7 +297,7 @@ export default function App() {
   }, [
     activeProfile,
     activeQuotaRefreshIntervalMinutes,
-    glm52AutoSwitchEnabled,
+    autoSwitchEnabled,
     refreshActiveQuotaForAutoSwitch,
   ]);
 
@@ -317,7 +318,7 @@ export default function App() {
       }
       if (!activeProfile || didBatchRefresh || now < activeQuotaRefreshDueAt.current) return;
       refreshActiveQuotaForAutoSwitch();
-      const intervalMs = glm52AutoSwitchEnabled
+      const intervalMs = autoSwitchEnabled
         ? 20 * 1000
         : activeQuotaRefreshIntervalMinutes * 60 * 1000;
       activeQuotaRefreshDueAt.current = now + intervalMs;
@@ -331,7 +332,7 @@ export default function App() {
   }, [
     activeProfile,
     activeQuotaRefreshIntervalMinutes,
-    glm52AutoSwitchEnabled,
+    autoSwitchEnabled,
     quotaRefreshIntervalMinutes,
     scheduledRefreshAllQuota,
     sortedProfileIds,
@@ -644,7 +645,8 @@ export default function App() {
       <FloatingCapsule
         profiles={profiles}
         quotas={quotas}
-        thresholdWan={glm52AutoSwitchThresholdWan}
+        thresholdWan={autoSwitchThresholdWan}
+        model={autoSwitchModel}
         language={language}
         scale={floatingWindowScale}
         resizerOpen={floatingResizerOpen}

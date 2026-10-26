@@ -16,7 +16,7 @@ use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::Engine;
 use rand::{rngs::OsRng, RngCore};
-use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const PREFIX: &str = "enc:v1:";
@@ -24,16 +24,12 @@ const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const SECRET_ENV: &str = "ZCODE_CREDENTIAL_SECRET";
 
-/// 解出的 user_info（来自 oauth:zai:user_info）。
-#[derive(Debug, Clone, Deserialize)]
+/// 从当前 OAuth 供应商的新旧 user_info 结构归一化得到的资料。
+#[derive(Debug, Clone)]
 pub struct UserInfo {
-    #[allow(dead_code)]
     pub user_id: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
-    pub phone_number: Option<String>,
-    pub mobile: Option<String>,
-    pub mobile_phone: Option<String>,
     pub avatar: Option<String>,
     /// 用户设置的显示名（昵称）
     pub name: Option<String>,
@@ -170,11 +166,58 @@ fn b64url(s: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("base64 解码失败：{}", e))
 }
 
-/// 从 credentials.json 的明文 map 里解出 user_info。
-pub fn extract_user_info(creds: &serde_json::Value) -> Option<UserInfo> {
-    let raw = creds.get("oauth:zai:user_info").and_then(|v| v.as_str())?;
+/// 显式指定供应商时只使用该供应商；老凭据没有此字段时兼容 Z.ai。
+pub fn extract_provider_family(creds: &Value) -> Option<String> {
+    if let Some(raw) = creds.get("oauth:active_provider") {
+        let plain = decrypt(raw.as_str()?).ok()?;
+        return match plain.trim() {
+            "zai" => Some("zai".into()),
+            "bigmodel" => Some("bigmodel".into()),
+            _ => None,
+        };
+    }
+    if creds.get("oauth:zai:user_info").is_none() && creds.get("oauth:bigmodel:user_info").is_some()
+    {
+        Some("bigmodel".into())
+    } else {
+        Some("zai".into())
+    }
+}
+
+/// 从 credentials.json 解出当前供应商资料，兼容新版 rawProfile 包装。
+pub fn extract_user_info(creds: &Value) -> Option<UserInfo> {
+    let family = extract_provider_family(creds)?;
+    let key = format!("oauth:{}:user_info", family);
+    let raw = creds.get(&key).and_then(Value::as_str)?;
     let dec = decrypt(raw).ok()?;
-    serde_json::from_str::<UserInfo>(&dec).ok()
+    let info: Value = serde_json::from_str(&dec).ok()?;
+    let pick = |keys: &[&str], allow_number: bool| {
+        [&info, &info["rawProfile"]].into_iter().find_map(|source| {
+            keys.iter().find_map(|key| match source.get(*key)? {
+                Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+                Value::Number(n) if allow_number => Some(n.to_string()),
+                _ => None,
+            })
+        })
+    };
+    Some(UserInfo {
+        user_id: pick(&["user_id", "userId", "id", "customerNumber", "sub"], true),
+        email: pick(&["email", "mail"], false),
+        phone: pick(
+            &[
+                "phone",
+                "phone_number",
+                "phoneNumber",
+                "mobile",
+                "mobile_phone",
+                "mobilePhone",
+            ],
+            false,
+        ),
+        avatar: pick(&["avatar", "avatarUrl", "picture"], false),
+        name: pick(&["displayName", "name", "nickName"], false)
+            .or_else(|| pick(&["username"], false)),
+    })
 }
 
 /// 从 credentials.json 里解出 zcodejwttoken（用于调用 billing 接口）。

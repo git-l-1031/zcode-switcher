@@ -2,7 +2,7 @@
 //!
 //! 路径与数据格式与 Python 版完全一致，已保存的档案可被任一版本接管：
 //!   - 凭据文件:  ~/.zcode/v2/credentials.json
-//!   - 身份指纹:  ~/.zcode/v2/config.json 里 coding-plan 的 JWT apiKey
+//!   - 身份指纹:  当前供应商 user_info / zcodejwttoken 中的账号标识
 //!   - 档案库:    ~/.zcode/v2/account-profiles/profiles.json (+ credentials.{id}.json)
 //!   - 备份:      ~/.zcode/v2/account-backups/credentials.switch.{ts}.json
 
@@ -311,37 +311,10 @@ fn short_id(uid: &str) -> String {
     }
 }
 
-/// 从 config.json 提取 user_id（coding-plan 的 JWT apiKey payload）。
-fn extract_user_id_from_config() -> String {
-    let path = match config_file() {
-        Ok(p) => p,
-        Err(_) => return String::new(),
-    };
-    let Ok(text) = fs::read_to_string(&path) else {
-        return String::new();
-    };
-    let Ok(cfg) = serde_json::from_str::<Value>(&text) else {
-        return String::new();
-    };
-    let Some(providers) = cfg.get("provider").and_then(|v| v.as_object()) else {
-        return String::new();
-    };
-    for (_key, prov) in providers {
-        let Some(opts) = prov.get("options").and_then(|v| v.as_object()) else {
-            continue;
-        };
-        let api_key = opts.get("apiKey").and_then(|v| v.as_str()).unwrap_or("");
-        if api_key.starts_with("eyJ") {
-            if let Some(uid) = jwt::extract_user_id(api_key) {
-                return uid;
-            }
-        }
-    }
-    String::new()
-}
-
 #[derive(Debug, Clone, Default)]
 struct AccountIdentity {
+    family: String,
+    user_id: String,
     name: String,
     email: String,
     phone: String,
@@ -350,7 +323,35 @@ struct AccountIdentity {
 
 impl AccountIdentity {
     fn key(&self) -> Option<String> {
-        identity_key(&self.email, &self.phone)
+        let key = identity_key(&self.email, &self.phone).or_else(|| {
+            let user_id = self.user_id.trim();
+            (!user_id.is_empty()).then(|| format!("uid:{}", user_id))
+        })?;
+        // 保留旧 Z.ai 档案的 ID 算法，其他供应商使用独立命名空间。
+        if self.family.is_empty() || self.family == "zai" {
+            Some(key)
+        } else {
+            Some(format!("{}:{}", self.family, key))
+        }
+    }
+
+    fn matches_profile(&self, profile: &Profile) -> bool {
+        let family = if profile.family.is_empty() {
+            "zai"
+        } else {
+            &profile.family
+        };
+        if self.family != family {
+            return false;
+        }
+        if !self.user_id.is_empty() && self.user_id == profile.user_id {
+            return true;
+        }
+        // 旧档案可能从 config.json 留下了过期 user_id，仍兼容原来的联系方式匹配。
+        let Some(key) = identity_key(&self.email, &self.phone) else {
+            return false;
+        };
+        identity_key(&profile.email, &profile.phone).as_deref() == Some(key.as_str())
     }
 }
 
@@ -384,18 +385,8 @@ fn all_builtin_provider_ids() -> impl Iterator<Item = &'static str> {
 /// 从 credentials.json 字节里读出 `oauth:active_provider`，得到当前账号属于哪条 family。
 /// 返回 `"zai"`/`"bigmodel"`，无法识别返回 None。
 fn extract_active_provider_family(cred_bytes: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(cred_bytes).ok()?;
-    let creds: Value = serde_json::from_str(text).ok()?;
-    let raw = creds
-        .get("oauth:active_provider")
-        .and_then(|v| v.as_str())?;
-    let plain = crate::crypto::decrypt(raw).ok()?;
-    let trimmed = plain.trim();
-    if trimmed == "zai" || trimmed == "bigmodel" {
-        Some(trimmed.to_string())
-    } else {
-        None
-    }
+    let creds: Value = serde_json::from_slice(cred_bytes).ok()?;
+    crate::crypto::extract_provider_family(&creds)
 }
 
 /// 读当前 `~/.zcode/v2/config.json`，把 6 条 builtin provider 的 `options.apiKey`
@@ -494,29 +485,29 @@ fn effective_family_mode(profile: &Profile) -> (String, String) {
 
 /// 从 credentials.json 字节里解密出账号身份。
 fn extract_identity_from_credentials(cred_bytes: &[u8]) -> AccountIdentity {
-    let Ok(text) = std::str::from_utf8(cred_bytes) else {
+    let Ok(creds) = serde_json::from_slice::<Value>(cred_bytes) else {
         return AccountIdentity::default();
     };
-    let Ok(creds) = serde_json::from_str::<Value>(text) else {
+    let Some(family) = crate::crypto::extract_provider_family(&creds) else {
         return AccountIdentity::default();
     };
-    match crate::crypto::extract_user_info(&creds) {
-        Some(info) => {
-            let phone = info
-                .phone
-                .or(info.phone_number)
-                .or(info.mobile)
-                .or(info.mobile_phone)
-                .unwrap_or_default();
-            AccountIdentity {
-                name: info.name.unwrap_or_default(),
-                email: info.email.unwrap_or_default(),
-                phone,
-                avatar: info.avatar.unwrap_or_default(),
-            }
-        }
-        None => AccountIdentity::default(),
+    let mut identity = AccountIdentity {
+        family,
+        ..AccountIdentity::default()
+    };
+    if let Some(info) = crate::crypto::extract_user_info(&creds) {
+        identity.user_id = info.user_id.unwrap_or_default();
+        identity.name = info.name.unwrap_or_default();
+        identity.email = info.email.unwrap_or_default();
+        identity.phone = info.phone.unwrap_or_default();
+        identity.avatar = info.avatar.unwrap_or_default();
     }
+    if identity.user_id.is_empty() {
+        identity.user_id = crate::crypto::extract_jwt_token(&creds)
+            .and_then(|token| jwt::extract_user_id(&token))
+            .unwrap_or_default();
+    }
+    identity
 }
 
 fn decrypt_portable_credentials(value: Value) -> R<Value> {
@@ -592,14 +583,17 @@ fn identity_key(email: &str, phone: &str) -> Option<String> {
     None
 }
 
-fn account_label(email: &str, phone: &str) -> String {
-    let email = normalize_email(email);
+fn account_label(identity: &AccountIdentity) -> String {
+    let email = normalize_email(&identity.email);
     if !email.is_empty() {
         return format!("邮箱 {}", email);
     }
-    let phone = normalize_phone(phone);
+    let phone = normalize_phone(&identity.phone);
     if !phone.is_empty() {
         return format!("手机号 {}", phone);
+    }
+    if !identity.user_id.is_empty() {
+        return format!("用户 ID {}", short_id(&identity.user_id));
     }
     "未知账号".to_string()
 }
@@ -670,10 +664,7 @@ fn find_profile_by_identity<'a>(
     profiles: &'a [Profile],
     identity: &AccountIdentity,
 ) -> Option<&'a Profile> {
-    let key = identity.key()?;
-    profiles
-        .iter()
-        .find(|p| identity_key(&p.email, &p.phone).as_deref() == Some(key.as_str()))
+    profiles.iter().find(|p| identity.matches_profile(p))
 }
 
 fn update_profile_from_capture(
@@ -921,13 +912,13 @@ fn prepare_setting_route_update(family: &str, mode: &str) -> R<Option<(PathBuf, 
 #[tauri::command]
 pub fn list_profiles() -> R<Vec<ProfileView>> {
     let profiles = load_index();
-    let active_key = current_identity().and_then(|identity| identity.key());
+    let identity = current_identity();
     let views = profiles
         .into_iter()
         .map(|p| {
-            let active = active_key
+            let active = identity
                 .as_ref()
-                .map(|key| identity_key(&p.email, &p.phone).as_deref() == Some(key.as_str()))
+                .map(|identity| identity.matches_profile(&p))
                 .unwrap_or(false);
             let short_id = short_id(&p.user_id);
             ProfileView {
@@ -979,7 +970,7 @@ pub fn current_status() -> R<CurrentStatus> {
 }
 
 /// 把当前 credentials.json 保存为账号档案。
-/// 邮箱优先、手机号兜底作为账号唯一标识；再次保存同账号时更新已有档案。
+/// 优先联系方式，无联系方式时用供应商内的用户 ID；再次保存同账号时更新已有档案。
 #[tauri::command]
 pub fn capture_current(name: String) -> R<Profile> {
     let cur = credentials_file()?;
@@ -992,12 +983,11 @@ pub fn capture_current(name: String) -> R<Profile> {
     let cred_hash = sha256_bytes(&cred_bytes);
     let metadata = detect_account_metadata(&cred_bytes);
 
-    // 从 config.json 取 user_id（JWT），并尝试从解密后的 user_info 取 用户名/email/avatar
-    let user_id = extract_user_id_from_config();
     let identity = extract_identity_from_credentials(&cred_bytes);
+    let user_id = identity.user_id.clone();
     let Some(key) = identity.key() else {
         return Err(AppError::Msg(
-            "未识别到当前账号邮箱或手机号，无法确认唯一账号。请先在 ZCode 重新登录后再保存。"
+            "未识别到当前账号邮箱、手机号或用户 ID，无法确认唯一账号。请先在 ZCode 重新登录后再保存。"
                 .into(),
         ));
     };
@@ -1011,11 +1001,8 @@ pub fn capture_current(name: String) -> R<Profile> {
 
     let mut profiles = load_index();
 
-    // 邮箱优先、手机号兜底作为唯一标识；再次保存同账号时更新凭据副本而不是新增档案。
-    if let Some(p) = profiles
-        .iter_mut()
-        .find(|p| identity_key(&p.email, &p.phone).as_deref() == Some(key.as_str()))
-    {
+    // 同一供应商内匹配联系方式或用户 ID，资料补全后仍更新原档案。
+    if let Some(p) = profiles.iter_mut().find(|p| identity.matches_profile(p)) {
         let saved = update_profile_from_capture(
             p,
             final_name,
@@ -1172,10 +1159,9 @@ pub fn delete_profile(id: String) -> R<bool> {
 
     // 不允许删除当前正在使用的账号
     if let Some(identity) = current_identity() {
-        let current_key = identity.key();
-        let is_active = profiles.iter().any(|p| {
-            p.id == id && current_key.as_deref() == identity_key(&p.email, &p.phone).as_deref()
-        });
+        let is_active = profiles
+            .iter()
+            .any(|p| p.id == id && identity.matches_profile(p));
         if is_active {
             return Err(AppError::Msg("不能删除当前正在使用的账号".into()));
         }
@@ -1252,34 +1238,6 @@ fn import_portable_account(portable: PortableAccount) -> R<Profile> {
 
     let cred_bytes = encrypt_portable_credentials(portable.credentials)?;
     let cred_hash = sha256_bytes(&cred_bytes);
-    let identity_from_creds = extract_identity_from_credentials(&cred_bytes);
-
-    let user_id = portable.profile.user_id.trim().to_string();
-    let email = if !identity_from_creds.email.trim().is_empty() {
-        identity_from_creds.email
-    } else {
-        portable.profile.email.trim().to_string()
-    };
-    let phone = if !identity_from_creds.phone.trim().is_empty() {
-        identity_from_creds.phone
-    } else {
-        portable.profile.phone.trim().to_string()
-    };
-    let Some(key) = identity_key(&email, &phone) else {
-        return Err(AppError::Msg(
-            "未识别到账号邮箱或手机号，无法确认唯一账号，未导入。".into(),
-        ));
-    };
-    let avatar = if !portable.profile.avatar.trim().is_empty() {
-        portable.profile.avatar.trim().to_string()
-    } else {
-        identity_from_creds.avatar
-    };
-    let final_name = if portable.profile.name.trim().is_empty() {
-        default_name(&identity_from_creds.name, &email, &phone, &user_id)
-    } else {
-        portable.profile.name.trim().to_string()
-    };
 
     // family/mode：优先用导出 JSON 自带的；缺则按 credentials 现场推断。
     // 老导出 JSON 没这些字段 → 退回基于 credentials 的推断。
@@ -1313,14 +1271,45 @@ fn import_portable_account(portable: PortableAccount) -> R<Profile> {
         (f, m)
     };
 
+    let mut identity = extract_identity_from_credentials(&cred_bytes);
+    if !family.is_empty() {
+        identity.family = family.clone();
+    }
+    if identity.user_id.is_empty() {
+        identity.user_id = portable.profile.user_id.trim().to_string();
+    }
+    if identity.email.is_empty() {
+        identity.email = portable.profile.email.trim().to_string();
+    }
+    if identity.phone.is_empty() {
+        identity.phone = portable.profile.phone.trim().to_string();
+    }
+    let Some(key) = identity.key() else {
+        return Err(AppError::Msg(
+            "未识别到账号邮箱、手机号或用户 ID，无法确认唯一账号，未导入。".into(),
+        ));
+    };
+    let avatar = if !portable.profile.avatar.trim().is_empty() {
+        portable.profile.avatar.trim().to_string()
+    } else {
+        identity.avatar.clone()
+    };
+    let final_name = if portable.profile.name.trim().is_empty() {
+        default_name(
+            &identity.name,
+            &identity.email,
+            &identity.phone,
+            &identity.user_id,
+        )
+    } else {
+        portable.profile.name.trim().to_string()
+    };
+
     let mut profiles = load_index();
-    if let Some(existing) = profiles
-        .iter()
-        .find(|p| identity_key(&p.email, &p.phone).as_deref() == Some(key.as_str()))
-    {
+    if let Some(existing) = find_profile_by_identity(&profiles, &identity) {
         return Err(AppError::Msg(format!(
             "账号标识 {} 已存在于账号「{}」，未重复导入。",
-            account_label(&email, &phone),
+            account_label(&identity),
             existing.name
         )));
     }
@@ -1334,9 +1323,9 @@ fn import_portable_account(portable: PortableAccount) -> R<Profile> {
     let profile = Profile {
         id: id.clone(),
         name: final_name,
-        user_id,
-        email,
-        phone,
+        user_id: identity.user_id,
+        email: identity.email,
+        phone: identity.phone,
         avatar,
         cred_hash,
         cred_file: cred_file_name,
@@ -1615,4 +1604,221 @@ pub async fn fetch_quota(id: Option<String>) -> R<crate::quota::QuotaInfo> {
     let text = std::str::from_utf8(&cred_bytes)
         .map_err(|e| AppError::Msg(format!("credentials 不是 UTF-8：{}", e)))?;
     crate::quota::fetch_quota(text).await.map_err(AppError::Msg)
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use base64::Engine;
+    use serde_json::json;
+
+    fn credentials(family: &str, info: Value) -> Value {
+        json!({
+            "oauth:active_provider": crate::crypto::encrypt(family).unwrap(),
+            format!("oauth:{}:user_info", family): crate::crypto::encrypt(&info.to_string()).unwrap(),
+        })
+    }
+
+    fn identity(creds: &Value) -> AccountIdentity {
+        extract_identity_from_credentials(&serde_json::to_vec(creds).unwrap())
+    }
+
+    fn token(user_id: &str) -> String {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(json!({ "user_id": user_id }).to_string());
+        format!("eyJhbGciOiJub25lIn0.{}.test", payload)
+    }
+
+    fn profile(family: &str, user_id: &str, email: &str, phone: &str) -> Profile {
+        serde_json::from_value(json!({
+            "id": "saved-profile",
+            "name": "Saved account",
+            "family": family,
+            "user_id": user_id,
+            "email": email,
+            "phone": phone,
+            "cred_hash": "test-hash",
+            "created_at": 0.0,
+            "updated_at": 0.0,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn legacy_zai_credentials_keep_contact_identity_and_skip_empty_aliases() {
+        let mut creds = credentials(
+            "zai",
+            json!({
+                "user_id": "legacy-user", "email": " User@Example.com ",
+                "phone": "", "phone_number": " ", "mobile": "+86 13800138000",
+                "name": "Legacy name", "avatar": "https://example.com/avatar.png",
+            }),
+        );
+        creds
+            .as_object_mut()
+            .unwrap()
+            .remove("oauth:active_provider");
+        let current = identity(&creds);
+        assert_eq!(current.family, "zai");
+        assert_eq!(current.user_id, "legacy-user");
+        assert_eq!(current.key().as_deref(), Some("email:user@example.com"));
+        assert_eq!(current.phone, "+86 13800138000");
+        assert_eq!(current.name, "Legacy name");
+        assert_eq!(current.avatar, "https://example.com/avatar.png");
+    }
+
+    #[test]
+    fn bigmodel_wrapped_user_without_email_or_phone_is_recognized() {
+        let mut creds = credentials(
+            "bigmodel",
+            json!({
+                "id": "bigmodel-user", "username": "user-alias", "displayName": "Display name",
+                "rawProfile": { "user_id": "bigmodel-user", "email": "", "name": "Raw name",
+                    "avatar": "https://example.com/avatar.png", "zcodeProfileSchemaVersion": 2 },
+            }),
+        );
+        creds["oauth:zai:user_info"] = json!(json!({
+            "user_id": "stale-user", "email": "stale@example.com", "name": "Stale name",
+        })
+        .to_string());
+        let current = identity(&creds);
+        assert_eq!(current.family, "bigmodel");
+        assert_eq!(current.user_id, "bigmodel-user");
+        assert_eq!(current.name, "Display name");
+        assert_eq!(current.avatar, "https://example.com/avatar.png");
+        assert!(current.email.is_empty());
+        assert!(current.phone.is_empty());
+        assert_eq!(current.key().as_deref(), Some("bigmodel:uid:bigmodel-user"));
+        assert!(current.matches_profile(&profile("bigmodel", "bigmodel-user", "", "")));
+    }
+
+    #[test]
+    fn raw_profile_supports_nonempty_aliases_and_numeric_user_ids() {
+        let creds = credentials(
+            "zai",
+            json!({
+                "id": " ", "email": "", "phone": "", "name": "",
+                "rawProfile": { "userId": 12345, "mail": "wrapped@example.com",
+                    "phoneNumber": "+1 202 555 0100", "name": "Wrapped name" },
+            }),
+        );
+        let current = identity(&creds);
+        assert_eq!(current.user_id, "12345");
+        assert_eq!(current.email, "wrapped@example.com");
+        assert_eq!(current.phone, "+1 202 555 0100");
+        assert_eq!(current.name, "Wrapped name");
+    }
+
+    #[test]
+    fn absent_provider_marker_can_infer_bigmodel_only_credentials() {
+        let creds = json!({
+            "oauth:bigmodel:user_info": json!({ "id": "bigmodel-user" }).to_string(),
+        });
+        let current = identity(&creds);
+        assert_eq!(current.family, "bigmodel");
+        assert_eq!(current.key().as_deref(), Some("bigmodel:uid:bigmodel-user"));
+    }
+
+    #[test]
+    fn missing_active_user_info_does_not_read_inactive_provider() {
+        let creds = json!({
+            "oauth:active_provider": "bigmodel",
+            "oauth:zai:user_info": json!({ "user_id": "stale", "email": "stale@example.com" }).to_string(),
+            "zcodejwttoken": token("current-user"),
+        });
+        let current = identity(&creds);
+        assert_eq!(current.family, "bigmodel");
+        assert_eq!(current.user_id, "current-user");
+        assert!(current.email.is_empty());
+        assert_eq!(current.key().as_deref(), Some("bigmodel:uid:current-user"));
+    }
+
+    #[test]
+    fn unreadable_or_unsupported_active_provider_cannot_reuse_stale_identity() {
+        for active in ["unsupported", "enc:v1:invalid"] {
+            let creds = json!({
+                "oauth:active_provider": active,
+                "oauth:zai:user_info": json!({ "user_id": "stale", "email": "stale@example.com" }).to_string(),
+                "zcodejwttoken": token("current-user"),
+            });
+            assert!(identity(&creds).key().is_none());
+            assert!(crate::crypto::extract_user_info(&creds).is_none());
+        }
+    }
+
+    #[test]
+    fn user_info_id_takes_priority_over_jwt() {
+        let mut creds = credentials("bigmodel", json!({ "id": "profile-user" }));
+        creds["zcodejwttoken"] = json!(token("other-user"));
+        assert_eq!(identity(&creds).user_id, "profile-user");
+    }
+
+    #[test]
+    fn providers_do_not_share_ids_or_contacts() {
+        let zai = identity(&credentials(
+            "zai",
+            json!({ "id": "same-id", "email": "same@example.com" }),
+        ));
+        let bigmodel = identity(&credentials(
+            "bigmodel",
+            json!({ "id": "same-id", "email": "same@example.com" }),
+        ));
+        assert_ne!(zai.key(), bigmodel.key());
+        assert!(!bigmodel.matches_profile(&profile("zai", "same-id", "same@example.com", "")));
+        assert!(!zai.matches_profile(&profile("bigmodel", "same-id", "same@example.com", "")));
+    }
+
+    #[test]
+    fn adding_contact_information_keeps_matching_uid_only_profile() {
+        let saved = profile("bigmodel", "same-id", "", "");
+        let current = identity(&credentials(
+            "bigmodel",
+            json!({ "id": "same-id", "email": "new@example.com" }),
+        ));
+        assert!(current.matches_profile(&saved));
+        assert_eq!(
+            find_profile_by_identity(&[saved], &current).unwrap().id,
+            "saved-profile"
+        );
+        let current = identity(&credentials("bigmodel", json!({ "id": "same-id" })));
+        assert!(current.matches_profile(&profile("bigmodel", "same-id", "new@example.com", "")));
+    }
+
+    #[test]
+    fn legacy_profiles_with_stale_config_uid_still_match_contacts() {
+        let current = identity(&credentials(
+            "zai",
+            json!({ "user_id": "current", "email": "user@example.com" }),
+        ));
+        assert!(current.matches_profile(&profile("", "old-config-user", " User@Example.com ", "")));
+        let current = identity(&credentials("zai", json!({ "phone": "+86 138-0013-8000" })));
+        assert!(current.matches_profile(&profile("", "", "", "8613800138000")));
+        assert_eq!(current.key().as_deref(), Some("phone:8613800138000"));
+    }
+
+    #[test]
+    fn absent_identifiers_never_match_an_empty_profile() {
+        let current = identity(&credentials("zai", json!({ "name": "Display name only" })));
+        assert!(current.key().is_none());
+        assert!(!current.matches_profile(&profile("", "", "", "")));
+        assert!(identity(&json!({ "zcodejwttoken": "invalid" }))
+            .key()
+            .is_none());
+        assert!(extract_identity_from_credentials(b"invalid json")
+            .key()
+            .is_none());
+    }
+
+    #[test]
+    fn portable_credentials_roundtrip_keeps_uid_and_family() {
+        let original = credentials(
+            "bigmodel",
+            json!({ "id": "portable-user", "displayName": "Portable name" }),
+        );
+        let portable = decrypt_portable_credentials(original.clone()).unwrap();
+        let imported = encrypt_portable_credentials(portable).unwrap();
+        let current = extract_identity_from_credentials(&imported);
+        assert_eq!(current.key(), identity(&original).key());
+        assert!(current.matches_profile(&profile("bigmodel", "portable-user", "", "")));
+    }
 }

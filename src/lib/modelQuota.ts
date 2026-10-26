@@ -1,6 +1,6 @@
 import type { BalanceItem, ProfileView, QuotaInfo } from "./api";
 
-export interface Glm52PoolStats {
+export interface ModelPoolStats {
   totalAccounts: number;
   usedAccounts: number;
   remainingAccounts: number;
@@ -8,14 +8,14 @@ export interface Glm52PoolStats {
   totalUnits: number;
 }
 
-export function findGlm52Balance(quota?: QuotaInfo): BalanceItem | undefined {
-  return quota?.balances?.find((b) =>
-    b.show_name.trim().toLowerCase().includes("glm-5.2")
-  );
+export function findModelBalance(quota: QuotaInfo | undefined, model: string): BalanceItem | undefined {
+  const key = model.trim().toLowerCase();
+  if (!key || quota?.error) return undefined;
+  return quota?.balances?.find((b) => b.show_name.trim().toLowerCase() === key);
 }
 
-export function glm52Remaining(quota?: QuotaInfo): number | null {
-  const item = findGlm52Balance(quota);
+export function modelRemaining(quota: QuotaInfo | undefined, model: string): number | null {
+  const item = findModelBalance(quota, model);
   if (!item) return null;
   if (Number.isFinite(item.remaining_units)) return item.remaining_units;
   if (Number.isFinite(item.total_units) && Number.isFinite(item.used_units)) {
@@ -32,20 +32,24 @@ export function formatQuotaUnits(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
-export function computeGlm52PoolStats(
+export function computeModelPoolStats(
   profiles: ProfileView[],
   quotas: Record<string, QuotaInfo>,
-  thresholdWan: number
-): Glm52PoolStats {
+  thresholdWan: number,
+  model: string
+): ModelPoolStats {
   const thresholdUnits = thresholdWan * 10_000;
   let usedAccounts = 0;
   let usedUnits = 0;
   let rawTotalUnits = 0;
   let usedBelowThresholdUnits = 0;
+  let totalAccounts = 0;
 
   for (const profile of profiles) {
-    const item = findGlm52Balance(quotas[profile.id]);
-    if (!item) continue;
+    const quota = quotas[profile.id];
+    const item = findModelBalance(quota, model);
+    if (!item || modelRemaining(quota, model) === null) continue;
+    totalAccounts += 1;
 
     const total = Number.isFinite(item.total_units) ? Math.max(0, item.total_units) : 0;
     const remaining = Number.isFinite(item.remaining_units)
@@ -66,13 +70,13 @@ export function computeGlm52PoolStats(
 
   const totalUnits = Math.max(
     usedUnits,
-    rawTotalUnits - profiles.length * thresholdUnits + usedBelowThresholdUnits
+    rawTotalUnits - totalAccounts * thresholdUnits + usedBelowThresholdUnits
   );
 
   return {
-    totalAccounts: profiles.length,
+    totalAccounts,
     usedAccounts,
-    remainingAccounts: Math.max(0, profiles.length - usedAccounts),
+    remainingAccounts: Math.max(0, totalAccounts - usedAccounts),
     usedUnits,
     totalUnits,
   };

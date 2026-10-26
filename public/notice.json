@@ -2,16 +2,16 @@
   "enabled": true,
   "notices": [
     {
-      "id": "release-1.1.11-2026-08-30",
+      "id": "release-1.1.12-2026-10-26",
       "kind": "system",
       "title": {
-        "zh": "1.1.11 更新说明"
+        "zh": "1.1.12 更新说明"
       },
       "body": {
-        "zh": "修复 OAuth 登录流程，优化账号排序逻辑并适配新模型额度。"
+        "zh": "修复当前账号识别，兼容 BigModel 新版用户资料。低额度自动切换支持自定义模型，阈值与悬浮窗统计同步跟随所选模型。"
       },
       "level": "info",
-      "date": "2026-08-30",
+      "date": "2026-10-26",
       "showOnce": true,
       "showOnStartup": true
     }

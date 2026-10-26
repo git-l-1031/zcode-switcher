@@ -1,11 +1,12 @@
 {
   "name": "zcode-switcher",
-  "version": "1.1.11",
+  "version": "1.1.12",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:auto-switch": "node --test tests/model-quota.test.mjs",
     "build:captcha-runtime": "node scripts/prepare-captcha-runtime.cjs",
     "notice:preview": "node scripts/preview-notice.mjs",
     "notice:check": "node scripts/preview-notice.mjs --check",

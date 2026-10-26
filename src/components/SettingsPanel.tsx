@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Download,
@@ -330,10 +330,13 @@ export default function SettingsPanel() {
     setQuotaRefreshIntervalMinutes,
     activeQuotaRefreshIntervalMinutes,
     setActiveQuotaRefreshIntervalMinutes,
-    glm52AutoSwitchEnabled,
-    setGlm52AutoSwitchEnabled,
-    glm52AutoSwitchThresholdWan,
-    setGlm52AutoSwitchThresholdWan,
+    autoSwitchEnabled,
+    setAutoSwitchEnabled,
+    autoSwitchModel,
+    setAutoSwitchModel,
+    autoSwitchThresholdWan,
+    setAutoSwitchThresholdWan,
+    quotas,
     autoRestart,
     setAutoRestart,
     tryNoRestartSwitch,
@@ -346,10 +349,24 @@ export default function SettingsPanel() {
     toast,
   } = useStore();
   const t = getTexts(language);
+  const [modelDraft, setModelDraft] = useState(autoSwitchModel);
+  const [thresholdDraft, setThresholdDraft] = useState(String(autoSwitchThresholdWan));
+  useEffect(() => setModelDraft(autoSwitchModel), [autoSwitchModel]);
+  useEffect(() => setThresholdDraft(String(autoSwitchThresholdWan)), [autoSwitchThresholdWan]);
+  const modelOptions = useMemo(() => {
+    const models = new Map<string, string>();
+    for (const name of [autoSwitchModel, ...Object.values(quotas).flatMap(
+      (quota) => quota.balances.map((item) => item.show_name)
+    )]) {
+      const value = name.trim();
+      if (value) models.set(value.toLowerCase(), value);
+    }
+    return [...models.values()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }, [autoSwitchModel, quotas]);
 
   const setUpdateAvailable = useStore((s) => s.setUpdateAvailable);
 
-  const [version, setVersion] = useState("v 1.1.6");
+  const [version, setVersion] = useState("v 1.1.12");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateModal, setUpdateModal] = useState<
     | {
@@ -475,7 +492,7 @@ export default function SettingsPanel() {
         title={t.floatingWindowTitle}
         desc={
           tryNoRestartSwitch
-            ? t.floatingWindowDesc
+            ? formatText(t.floatingWindowDesc, { model: autoSwitchModel })
             : t.floatingWindowDescDisabled
         }
       >
@@ -510,26 +527,53 @@ export default function SettingsPanel() {
         desc={t.glmAutoDesc}
       >
         <Toggle
-          on={glm52AutoSwitchEnabled}
-          onClick={() => setGlm52AutoSwitchEnabled(!glm52AutoSwitchEnabled)}
+          on={autoSwitchEnabled}
+          onClick={() => setAutoSwitchEnabled(!autoSwitchEnabled)}
         />
+      </Row>
+
+      <Row
+        icon={<Zap size={15} />}
+        title={t.autoSwitchModelTitle}
+        desc={t.autoSwitchModelDesc}
+      >
+        <input
+          aria-label={t.autoSwitchModelTitle}
+          list="auto-switch-models"
+          value={modelDraft}
+          placeholder={t.autoSwitchModelPlaceholder}
+          onChange={(e) => setModelDraft(e.currentTarget.value)}
+          onBlur={() => {
+            const model = modelDraft.trim() || autoSwitchModel;
+            setAutoSwitchModel(model);
+            setModelDraft(model);
+          }}
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
+          className="focus-ring h-8 w-44 rounded-lg border border-base-border bg-base-card px-2 text-sm text-text-primary outline-none transition hover:bg-base-cardhover"
+        />
+        <datalist id="auto-switch-models">
+          {modelOptions.map((model) => <option key={model} value={model} />)}
+        </datalist>
       </Row>
 
       <Row
         icon={<Clock size={15} />}
         title={t.glmThresholdTitle}
-        desc={t.glmThresholdDesc}
+        desc={formatText(t.glmThresholdDesc, { model: autoSwitchModel })}
       >
         <div className="flex items-center gap-2">
           <input
             type="number"
-            min={10}
-            max={100}
-            step={1}
-            value={glm52AutoSwitchThresholdWan}
-            onChange={(e) =>
-              setGlm52AutoSwitchThresholdWan(Number(e.currentTarget.value))
-            }
+            aria-label={t.glmThresholdTitle}
+            min={0.01}
+            step={0.01}
+            value={thresholdDraft}
+            onChange={(e) => setThresholdDraft(e.currentTarget.value)}
+            onBlur={() => {
+              setAutoSwitchThresholdWan(Number(thresholdDraft));
+              setThresholdDraft(String(useStore.getState().autoSwitchThresholdWan));
+            }}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }}
             className="focus-ring h-8 w-20 rounded-lg border border-base-border bg-base-card px-2 text-right text-sm font-semibold text-text-primary outline-none transition hover:bg-base-cardhover"
           />
           <span className="text-xs font-medium text-text-muted">{t.tenThousandUnit}</span>
@@ -539,14 +583,14 @@ export default function SettingsPanel() {
       <Row
         icon={<Clock size={15} />}
         title={t.activeRefreshTitle}
-        desc={glm52AutoSwitchEnabled ? t.activeRefreshDescAuto : t.activeRefreshDesc}
+        desc={autoSwitchEnabled ? t.activeRefreshDescAuto : t.activeRefreshDesc}
       >
         <select
           value={activeQuotaRefreshIntervalMinutes}
           onChange={(e) =>
             setActiveQuotaRefreshIntervalMinutes(Number(e.currentTarget.value))
           }
-          disabled={glm52AutoSwitchEnabled}
+          disabled={autoSwitchEnabled}
           className="focus-ring h-8 rounded-lg border border-base-border bg-base-card px-2 text-sm font-semibold text-text-primary outline-none transition hover:bg-base-cardhover disabled:opacity-50"
         >
           {[1, 2, 3, 4, 5].map((minute) => (
